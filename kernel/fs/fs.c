@@ -127,6 +127,9 @@ int fs_init(void)
     vfs_mount_root(fat_vfs_ops());
     if (ramfs_init() == 0)
         vfs_mount_tmp(ramfs_vfs_ops());
-    kprintf("[fs] ready (FAT / RO + ramfs /tmp RW)\n");
+    /* Prove AHCI write + FAT16 dirent/cluster update on the live ESP. */
+    if (fat_selftest_write() != 0)
+        kprintf("[fs] fat write selftest failed (continuing)\n");
+    kprintf("[fs] ready (FAT / RW + ramfs /tmp RW)\n");
     return 0;
 }

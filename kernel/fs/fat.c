@@ -856,5 +856,61 @@ int fat_mount(u64 part_lba, u64 part_sectors)
     kprintf("[fat] mounted FAT%u spc=%u fatsz=%u root_ent=%u data_lba=%u clusters=%u\n",
             g_fat.fat_type, g_fat.sec_per_clus, g_fat.fatsz, g_fat.root_ent_cnt,
             g_fat.data_lba, g_fat.data_clusters);
+    if (g_fat.fat_type == 16)
+        kprintf("[fat] write/mkdir enabled on root (FAT16)\n");
+    else
+        kprintf("[fat] write/mkdir disabled (need FAT16 ESP)\n");
+    return 0;
+}
+
+/* Create/write/readback HELIXW.TXT in root — proves AHCI write + FAT update. */
+int fat_selftest_write(void)
+{
+    if (!g_fat.ready || g_fat.fat_type != 16) {
+        kprintf("[fat] selftest skip (not FAT16)\n");
+        return -1;
+    }
+
+    const char *path = "/HELIXW.TXT";
+    const char *payload = "HelixFATWriteOK\n";
+    u64 plen = 0;
+    while (payload[plen])
+        plen++;
+
+    struct vfs_file *f = 0;
+    if (fat_open(path, VFS_O_CREAT | VFS_O_TRUNC | VFS_O_WRONLY, &f) != 0) {
+        kprintf("[fat] selftest open-create failed\n");
+        return -1;
+    }
+    u64 nw = 0;
+    if (fat_write_file(f, payload, plen, &nw) != 0 || nw != plen) {
+        kprintf("[fat] selftest write failed\n");
+        fat_close(f);
+        return -1;
+    }
+    fat_close(f);
+
+    /* Re-open read-only and verify */
+    f = 0;
+    if (fat_open(path, VFS_O_RDONLY, &f) != 0) {
+        kprintf("[fat] selftest reopen failed\n");
+        return -1;
+    }
+    char buf[64];
+    memset(buf, 0, sizeof(buf));
+    u64 nr = 0;
+    if (fat_read_file(f, buf, sizeof(buf) - 1, &nr) != 0 || nr != plen) {
+        kprintf("[fat] selftest readback size mismatch nr=%llu\n",
+                (unsigned long long)nr);
+        fat_close(f);
+        return -1;
+    }
+    fat_close(f);
+    if (memcmp(buf, payload, (size_t)plen) != 0) {
+        kprintf("[fat] selftest content mismatch\n");
+        return -1;
+    }
+    kprintf("[fat] selftest OK: %s", payload); /* payload has newline */
+    kprintf("[fs] HelixFATWriteOK\n");
     return 0;
 }

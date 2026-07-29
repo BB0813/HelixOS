@@ -163,10 +163,12 @@ smoke-user: esp
 
 smoke-fs: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
-	@HEADLESS=1 TIMEOUT_SECS=40 bash $(ROOT)/scripts/run-qemu.sh || true
-	@ok=1; for pat in "M4 fs ready" "HelixFS OK" "loaded init+task2 from disk"; do \
+	@HEADLESS=1 TIMEOUT_SECS=45 bash $(ROOT)/scripts/run-qemu.sh || true
+	@ok=1; for pat in "M4 fs ready" "HelixFS OK" "HelixFATWriteOK" "loaded init+task2 from disk"; do \
 		grep -a -F -q "$$pat" $(ROOT)/serial.log 2>/dev/null || { echo "SMOKE-FS FAIL $$pat"; ok=0; }; done; \
-	[ "$$ok" = 1 ] && echo SMOKE-FS OK || { cat $(ROOT)/serial.log; exit 1; }
+	if [ "$$ok" = 1 ]; then echo SMOKE-FS OK; \
+		grep -a -E '\[fat\]|\[fs\]|HelixFS|HelixFAT|write/mkdir' $(ROOT)/serial.log | head -40; \
+	else cat $(ROOT)/serial.log; exit 1; fi
 
 smoke-linux: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd

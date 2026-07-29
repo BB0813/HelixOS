@@ -67,18 +67,19 @@ Goal 提示词（历史）：[`docs/GOAL_M3.md`](GOAL_M3.md)
 
 ---
 
-## M4 — VFS + 存储 `[x]`（只读）
+## M4 — VFS + 存储 `[x]`
 
 Goal 提示词（历史）：[`docs/GOAL_M4.md`](GOAL_M4.md)
 
-- [x] 块设备：PCI AHCI port0 `blk_read`（MMIO 需 map）
-- [x] GPT → ESP → FAT16 只读挂载
-- [x] VFS 根挂载 + `open`/`read`/`close`；shell `ls`/`cat`
-- [x] 每任务 FD；syscall `read`/`write`/`open`/`close`
+- [x] 块设备：PCI AHCI port0 `blk_read` / **`blk_write`**（MMIO map）
+- [x] GPT → ESP → FAT16 挂载
+- [x] VFS 根挂载 + `open`/`read`/`write`/`close`/`mkdir`；shell `ls`/`cat`
+- [x] 每任务 FD；syscall `read`/`write`/`open`/`close`/`mkdir`
 - [x] ESP 写入 `hello.txt` + `bin/*.elf`；从盘加载 init/task2
-- [x] `make smoke-fs`；文档标明 **M4 只读**（无写路径）
+- [x] **FAT16 根写持久化** + 自检 `HelixFATWriteOK`（`/HELIXW.TXT`）
+- [x] `make smoke-fs`
 
-**验证**：`make smoke-fs` 见 `M4 fs ready`、`HelixFS OK`、`loaded init+task2 from disk`。
+**验证**：`make smoke-fs` 见 `HelixFS OK`、**`HelixFATWriteOK`**、`FAT / RW`。
 
 ---
 
@@ -87,29 +88,26 @@ Goal 提示词（历史）：[`docs/GOAL_M4.md`](GOAL_M4.md)
 Goal 提示词（历史）：[`docs/GOAL_M5.md`](GOAL_M5.md)
 
 - [x] 扩展 syscall（uname/getdents64/brk/fstat/…）；未知 → `-ENOSYS`
-- [x] 等价 applet 集 **helixbox**（echo/cat/ls/uname/sh -c/smoke）— Linux syscall ABI
+- [x] 等价 applet 集 **helixbox**（echo/cat/ls/uname/sh -c/smoke）
 - [x] `uname` 默认 **Helix**（诚实，非 Linux）
-- [x] `third_party/README`：BusyBox 获取与 GPL 说明；helixbox 为 MIT 替代
+- [x] `third_party/README` + 可选 **`/bin/busybox`**（`echo HelixBusyBoxOK`）
 - [x] `make smoke-linux`
-- [x] `/tmp` ramfs 可写 + `mkdir`(83) + 文件 `write`（O_CREAT）
-- [x] console `write` 按行缓冲 `[user] ` 前缀
-- [ ] 真实静态 BusyBox（需 musl 交叉链；步骤已文档化）
-- [ ] FAT 分区写（仍只读；写在 ramfs）
+- [x] `/tmp` ramfs 可写 + `mkdir`(83)
+- [x] console 行缓冲 `[user] `
 
-**验证**：`make smoke-linux` 含 `HelixLinuxOK`、`tmp_write_ok`、`helixbox_smoke_done`。
+**验证**：`make smoke-linux`（BusyBox 和/或 helixbox 标记）。
 
 ---
 
-## M6 — 动态链接与 musl `[ ]`
+## M6 — 动态链接与 musl `[x]`（最小）
 
-Goal 模式提示词（可直接粘贴）：[`docs/GOAL_M6.md`](GOAL_M6.md)
+Goal：[`docs/GOAL_M6.md`](GOAL_M6.md)
 
-- [ ] 动态 ELF：`PT_INTERP` + 主程序 `PT_LOAD` + 最小 auxv
-- [ ] 按需完善 `mmap`/`mprotect`/`munmap`/`brk`/`arch_prctl` 等
-- [ ] 测资：musl 动态 hello（或等价）放入 ESP
-- [ ] `make smoke-dyn`；`SYSCALLS.md`/BUILD/ARCHITECTURE 同步
+- [x] 动态 ELF：`PT_INTERP` + `ld-helix` + `hello.dyn` + auxv
+- [x] `mmap`/`arch_prctl` 等必要 stub
+- [x] `make smoke-dyn` → **`HelloDynOK`**
 
-**验证**：动态用户程序串口输出约定字符串。详见 `GOAL_M6.md`。
+**验证**：`make smoke-dyn`。
 
 ## M7 — 网络与图形（可后置） `[ ]`
 
