@@ -1,6 +1,6 @@
 # HelixOS
 
-**本项目仅为整活 并不考虑引起任何言论冲突**
+**本项目仅为整活 并不考虑引起任何言论冲突**  
 **“自研”内核** · **主兼容 Linux 用户态** · x86_64 · UEFI only
 
 HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Helix）自研；用户态以 Linux ABI 兼容为第一公民，目标是逐步跑通 musl / BusyBox 级别的静态程序，再加深。
