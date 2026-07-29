@@ -10,10 +10,12 @@
 | `make smoke` | 无头启动；要求 M0+M1+M2 标记（含 `M2 shell ready` 与 `[tick]`） |
 | `make smoke-shell` | TCP 串口喂 `help/mem/page/int/uptime`，grep 命令输出 |
 | `make smoke-user` | 无头启动；要求 Ring3 `write` / `yield` / `exit` / `M3 userland OK` |
-| `make smoke-fs` | AHCI+FAT 挂载、`HelixFS OK`、从盘加载 init/task2 |
-| `make smoke-linux` | helixbox：echo/cat/ls/uname/sh 冒烟 |
-| `make smoke-panic` | 带 `-DHELIX_M1_TEST_PF` 重建，断言 `#PF` panic，再恢复正常构建 |
-| `make user` | 仅构建 `user/*.elf` 与 `include/generated/*_elf.h` |
+| `make smoke-fs` | AHCI+FAT；`HelixFS OK` + **`HelixFATWriteOK`**（盘上写回） |
+| `make smoke-linux` | BusyBox `echo` 和/或 helixbox smoke |
+| `make smoke-dyn` | **M6**：`PT_INTERP` + `ld-helix` → **`HelloDynOK`** |
+| `make smoke-panic` | `-DHELIX_M1_TEST_PF`，断言 `#PF` panic |
+| `make user` | user ELF + `ld-helix.so` + `hello.dyn` + generated headers |
+| `make fetch-busybox` | 下载可选静态 BusyBox 到 `third_party/busybox/` |
 
 ## Toolchain
 
@@ -71,6 +73,22 @@ make run
 - `/usr/share/OVMF/OVMF_CODE.fd` + `OVMF_VARS.fd`
 - `/usr/share/edk2/ovmf/OVMF_CODE.fd`
 - `/usr/share/qemu/OVMF.fd`（部分发行版合并镜像）
+
+## M6 dynamic link (in-tree, no musl cross required)
+
+Windows/MSYS 主路径 **不**要求 musl 交叉链。仓库自研最小解释器：
+
+| 构建产物 | ESP 路径 | 说明 |
+|----------|----------|------|
+| `build/user/ld-helix.so` | `/lib/ld-helix.so` | 读 auxv `AT_ENTRY` 后跳主程序 |
+| `build/user/hello.dyn` | `/bin/hello.dyn` | 带 `PT_INTERP=/lib/ld-helix.so` |
+
+```bash
+make user          # 生成 ld-helix + hello.dyn（elf_set_interp.py 打 PT_INTERP）
+make smoke-dyn     # 串口须含：M6 dyn、PT_INTERP、HelloDynOK
+```
+
+完整 **musl `ld.so` + 真实动态 musl hello** 需 Linux/WSL musl 交叉；本机未强制。将来替换 ESP 上的 interp/程序即可，内核路径已按 Linux auxv/`PT_INTERP` 布局。
 
 ## Expected serial output (M2)
 

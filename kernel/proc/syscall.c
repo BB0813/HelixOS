@@ -289,31 +289,49 @@ static i64 sys_dup2(u64 oldfd, u64 newfd)
     return (i64)newfd;
 }
 
+/* Linux mmap flags (x86_64) we care about for M6. */
+#define MAP_SHARED     0x01
+#define MAP_PRIVATE    0x02
+#define MAP_FIXED      0x10
+#define MAP_ANONYMOUS  0x20
+
 static i64 sys_mmap(u64 addr, u64 len, u64 prot, u64 flags, u64 fd, u64 off)
 {
-    (void)prot;
     (void)off;
-    (void)flags;
-    /* Anonymous only */
-    if (fd != (u64)-1 && fd != 0xffffffffffffffffull)
-        return ERR(ENOSYS);
     if (len == 0)
         return ERR(EINVAL);
+    /* File-backed mmap not implemented — anonymous only (MAP_ANONYMOUS or fd==-1). */
+    int anon = (flags & MAP_ANONYMOUS) || fd == (u64)-1 || fd == 0xffffffffffffffffull;
+    if (!anon)
+        return ERR(ENOSYS);
     len = align_up_u64(len, PAGE_SIZE);
-    u64 va = addr & ~0xFFFull;
-    if (addr == 0) {
-        static u64 anon_bump = USER_BASE + 0x2000000ull;
+    int wr = (prot & 0x2) ? 1 : 1; /* W for simplicity; NX not enforced */
+    (void)wr;
+
+    u64 va;
+    if (addr == 0 && !(flags & MAP_FIXED)) {
+        static u64 anon_bump = USER_BASE + 0x2000000ull; /* high Helix window gap */
         va = anon_bump;
         anon_bump += len;
         if (anon_bump >= USER_STACK_TOP - USER_STACK_SIZE)
             return ERR(ENOMEM);
     } else {
-        /* Fixed hint (BusyBox/musl often passes absolute VA in low classic range
-         * or high Helix window). Map page-by-page with fresh phys. */
-        if (!user_ptr_ok((void *)(uintptr_t)va, len) &&
-            !(va >= 0x400000ull && va + len <= 0x01000000ull) &&
-            !(va >= 0x50000000ull && va + len <= 0x51000000ull)) {
-            /* still try — user_ptr_ok is for syscall args; mmap creates the range */
+        va = addr & ~0xFFFull;
+        /* Fixed / hint: allow Helix high window, classic low ET_EXEC, ld-helix band. */
+        int ok_range =
+            (va >= USER_BASE && va + len <= USER_STACK_TOP) ||
+            (va >= USER_LOW_MIN && va + len <= USER_LOW_MAX) ||
+            (va >= 0x50000000ull && va + len <= 0x51000000ull) ||
+            (va >= 0x400000ull && va + len <= 0x01000000ull);
+        if (!ok_range && (flags & MAP_FIXED))
+            return ERR(EINVAL);
+        if (!ok_range && addr != 0) {
+            /* soft hint outside known windows — still try high bump */
+            static u64 anon_bump2 = USER_BASE + 0x2800000ull;
+            va = anon_bump2;
+            anon_bump2 += len;
+            if (anon_bump2 >= USER_STACK_TOP - USER_STACK_SIZE)
+                return ERR(ENOMEM);
         }
     }
     if (!vmm_alloc_user_pages(va, len / PAGE_SIZE, 1))

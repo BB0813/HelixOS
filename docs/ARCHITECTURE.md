@@ -105,10 +105,10 @@ UEFI firmware (OVMF)
 | 中断 / 时钟 | M2 **done** | 8259 + PIT；IRQ 可返回 |
 | 内核 shell | M2 **done** | COM1；help/mem/page/int/… |
 | 用户态 / syscall | M3 **done** | Ring3 + write/yield/exit + 协作 |
-| VFS / FAT | M4 **done (RO)** | AHCI + GPT + FAT16；盘上 ELF |
-| Linux 兼容子集 | M5 **done (helixbox)** | Linux syscall 号 + multi-call；uname=Helix |
-| Linux syscall 表 | M5 | 见 `SYSCALLS.md` |
-| 动态链接 / musl | M6 | mmap/brk/arch_prctl 等 |
+| VFS / FAT | M4 **done (RW 根)** | AHCI + GPT + FAT16 写；盘上 ELF |
+| Linux 兼容子集 | M5 **done** | helixbox + 可选 BusyBox echo；uname=Helix |
+| Linux syscall 表 | M5–M6 | 见 `SYSCALLS.md` |
+| 动态链接 | M6 **done (最小)** | `PT_INTERP` + `ld-helix` + `hello.dyn`；非完整 musl ld.so |
 | 网络 / 图形 | M7 | 可后置 |
 
 ## ABI policy
@@ -127,16 +127,26 @@ kernel/
   mm/                 pmm, heap, vmm
   arch/x86_64/        paging, gdt, idt, isr, pic, pit, timer, irq, syscall_entry
   proc/               elf, syscall, task, userland
-user/                 freestanding init/task2 + link scripts
+user/                 freestanding init/task2/helixbox + ld-helix/hello.dyn
 libk/                 serial, kprintf, panic, string
 include/
   efi/                最小 UEFI 类型
   helix/              公共头
   generated/          嵌入的 user ELF 头（构建生成）
- 
-user/                 自研测试/工具用户态（M3+）
-third_party/          第三方源码与合规说明
-scripts/              mkdisk / run-qemu / check-deps
+third_party/          BusyBox 等（fetch，不默认 vendoring 二进制）
+scripts/              mkdisk / run-qemu / elf_set_interp / check-deps
+
+### M6 dynamic path
+
+```text
+exec /bin/hello.dyn
+  → elf_load_dynamic: PT_INTERP=/lib/ld-helix.so
+  → map main PT_LOAD + interp PT_LOAD
+  → user stack: argc/argv/env/aux (AT_ENTRY=main, AT_BASE=interp, AT_PHDR…)
+  → enter Ring3 at interp entry (0x50000000)
+  → ld-helix reads AT_ENTRY and jmp main
+  → main write("HelloDynOK\n"); exit
+```
 docs/
 ```
 

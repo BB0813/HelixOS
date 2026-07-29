@@ -1,14 +1,10 @@
 # Goal: HelixOS M6 — 动态链接与 musl
 
-## 项目
-HelixOS：自研 x86_64 内核 Helix + Linux 用户态兼容（非 Linux 源码/发行版）。
-UEFI only。M0–M5 已完成：启动/核/shell/Ring3/协作；AHCI+GPT；`/` FAT 只读 + `/tmp` ramfs 可写；Linux 号 syscall 子集 + helixbox；`smoke`/`smoke-user`/`smoke-fs`/`smoke-linux` 通过。
-**尚无**：动态链接、`ld.so`/musl 动态程序、完整 `mmap` 语义、TLS/`arch_prctl` 硬化、真 BusyBox 全量（可选并行）。
+> **状态：已完成（最小，2026-07-29）** — 自研 `ld-helix` + `PT_INTERP` + `hello.dyn`；  
+> 验证：`make smoke-dyn` → `HelloDynOK`。完整 musl `ld.so` 未宣称（Windows/MSYS 无 musl 交叉链）。
 
-现状要点：已有最小 `brk`、匿名 `mmap`/`munmap`/`mprotect` stub、`arch_prctl`(SET_FS)、静态 ET_EXEC 加载与 argv/aux；用户窗高地址 + 低地址经典 load（BusyBox 尝试）。
-
-## 本目标（一次做完，可构建可验证）
-跑通 **至少一个 musl 动态链接的 Hello/小程序**（或等价：自研 `ld.so` 加载带 `PT_INTERP` 的 ELF），并补齐为此必需的 syscall/加载行为。
+实现：`kernel/proc/elf.c`（`elf_load_dynamic`）、`user/ld_helix.c`、`user/hello_dyn.c`、`scripts/elf_set_interp.py`；  
+syscall：`mmap`(匿名/FIXED hint)/`munmap`/`mprotect`/`arch_prctl` 等。
 
 1. **动态 ELF 加载**  
    - 识别 `PT_INTERP`；加载 interpreter（musl `ld.so` 或自研最小 loader）  

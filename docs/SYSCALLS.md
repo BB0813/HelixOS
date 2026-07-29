@@ -22,7 +22,9 @@
 | 2 | open | **done** | O_CREAT/TRUNC/APPEND（FAT 根 + ramfs） |
 | 3 | close | **done** | |
 | 5 | fstat | **done** | 最小 `struct stat` |
-| 9 | mmap | **partial** | 匿名等 stub（M6/BusyBox） |
+| 9 | mmap | **partial** | **匿名**（`MAP_ANONYMOUS` 或 `fd==-1`）；支持 `addr=0` 与 FIXED/hint；**非** file-backed |
+| 10 | mprotect | **partial** | 成功 stub（不改页属性） |
+| 11 | munmap | **partial** | 成功 stub（暂泄漏页） |
 | 12 | brk | **done** | 按页扩展 |
 | 16 | ioctl | **partial** | console stub |
 | 24 | sched_yield | **done** | 协作 |
@@ -33,7 +35,7 @@
 | 72 | fcntl | **partial** | stub |
 | 79 | getcwd | **done** | 恒 `"/"` |
 | 83 | mkdir | **done** | **`/tmp/...` 与 FAT 根 8.3** |
-| 158 | arch_prctl | **partial** | SET_FS 等 |
+| 158 | arch_prctl | **partial** | `ARCH_SET_FS` / `GET_FS`（MSR） |
 | 217 | getdents64 | **done** | FAT 根或 /tmp |
 
 Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
@@ -53,4 +55,5 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 日期 | 变更 |
 |------|------|
 | 2026-07-28 | M3–M5；ramfs `/tmp` |
-| 2026-07-29 | M6 `HelloDynOK`；BusyBox echo；**FAT16 根写持久化** |
+| 2026-07-29 | M6 `HelloDynOK`；BusyBox echo；FAT16 根写 |
+| 2026-07-29 | M6 收尾：mmap 标志文档化；ARCHITECTURE/BUILD 动态路径 |
