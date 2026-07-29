@@ -1,0 +1,55 @@
+# Build artifacts
+/build/
+/out/
+*.o
+*.obj
+*.efi
+*.EFI
+*.lib
+*.elf
+*.bin
+*.img
+*.iso
+*.map
+*.d
+*.dep
+
+# ESP staging / QEMU runtime
+/esp/
+/out/esp.img
+/qemu-*.log
+/qemu.err
+/serial.log
+/ovmf_vars.fd
+/.tmp/
+*.qcow2
+
+# Editor / OS junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+*.user
+
+# Large optional downloads (BusyBox static binary ~1MB+)
+/third_party/busybox/busybox
+/third_party/busybox/*.tar.*
+
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Local secrets / machine-specific
+.env
+.local/
+scripts/local.mk
+
+# Local editor/agent tooling
+.marking/
+*.jpg
+*.png
+!esp_assets/**

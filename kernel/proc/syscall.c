@@ -1,0 +1,522 @@
+#include "helix/syscall.h"
+#include "helix/errno.h"
+#include "helix/task.h"
+#include "helix/gdt.h"
+#include "helix/vfs.h"
+#include "helix/kprintf.h"
+#include "helix/serial.h"
+#include "helix/string.h"
+#include "helix/types.h"
+#include "helix/cpuio.h"
+#include "helix/heap.h"
+#include "helix/pmm.h"
+#include "helix/vmm.h"
+#include "helix/paging.h"
+
+u64 g_syscall_kstack;
+u64 g_syscall_user_rsp;
+
+extern void syscall_entry_asm(void);
+
+struct syscall_frame {
+    u64 nr;
+    u64 a0, a1, a2, a3, a4, a5;
+    u64 user_rip;
+    u64 user_rflags;
+    u64 user_rsp;
+};
+
+int user_ptr_ok(const void *ptr, u64 len)
+{
+    u64 p = (u64)(uintptr_t)ptr;
+    if (len && p + len < p)
+        return 0;
+    /* Helix high window (apps + stacks) */
+    if (p >= USER_BASE && p < USER_STACK_TOP && p + len <= USER_STACK_TOP)
+        return 1;
+    /* ld-helix interpreter window */
+    if (p >= 0x50000000ull && p + len <= 0x51000000ull)
+        return 1;
+    /* Classic low Linux ET_EXEC + brk/mmap (BusyBox data/BSS ~0x4xxxxx–0x9xxxxx) */
+    if (p >= USER_LOW_MIN && p + len <= USER_LOW_MAX)
+        return 1;
+    /* Stacks just below 0x40000000 for low ELFs */
+    if (p >= 0x3F000000ull && p + len <= USER_BASE)
+        return 1;
+    return 0;
+}
+
+static int copy_user_path(u64 uptr, char *kbuf, u64 cap)
+{
+    if (!user_ptr_ok((const void *)(uintptr_t)uptr, 1))
+        return -1;
+    const char *p = (const char *)(uintptr_t)uptr;
+    u64 i = 0;
+    while (i + 1 < cap) {
+        if (!user_ptr_ok(p + i, 1))
+            return -1;
+        char c = p[i];
+        kbuf[i++] = c;
+        if (c == 0)
+            return 0;
+    }
+    return -1;
+}
+
+static i64 sys_write(u64 fd, u64 buf, u64 count)
+{
+    if (count == 0)
+        return 0;
+    if (!user_ptr_ok((const void *)(uintptr_t)buf, count))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f)
+        return ERR(EBADF);
+    if (f->is_console)
+        return vfs_console_write(f, (const char *)(uintptr_t)buf, count);
+    u64 n = 0;
+    if (vfs_write(f, (const void *)(uintptr_t)buf, count, &n) != 0)
+        return ERR(EACCES);
+    return (i64)n;
+}
+
+static i64 sys_read(u64 fd, u64 buf, u64 count)
+{
+    if (count == 0)
+        return 0;
+    if (!user_ptr_ok((void *)(uintptr_t)buf, count))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f)
+        return ERR(EBADF);
+    u64 n = 0;
+    if (vfs_read(f, (void *)(uintptr_t)buf, count, &n) != 0)
+        return ERR(EIO);
+    return (i64)n;
+}
+
+static i64 sys_open(u64 path, u64 flags, u64 mode)
+{
+    (void)mode;
+    char kpath[VFS_PATH_MAX];
+    if (copy_user_path(path, kpath, sizeof(kpath)) != 0)
+        return ERR(EFAULT);
+    struct vfs_file *f = 0;
+    int fl = (int)flags;
+    if (vfs_open_flags(kpath, fl, &f) != 0)
+        return ERR(ENOENT);
+    fd_init_task_stdio();
+    int fd = fd_install(f);
+    if (fd < 0) {
+        vfs_close(f);
+        return ERR(ENOSPC);
+    }
+    return fd;
+}
+
+static i64 sys_mkdir(u64 path, u64 mode)
+{
+    char kpath[VFS_PATH_MAX];
+    if (copy_user_path(path, kpath, sizeof(kpath)) != 0)
+        return ERR(EFAULT);
+    if (vfs_mkdir(kpath, (int)mode) != 0)
+        return ERR(EACCES);
+    return 0;
+}
+
+static i64 sys_openat(u64 dirfd, u64 path, u64 flags, u64 mode)
+{
+    (void)dirfd; /* only absolute / relative-from-root for M5 */
+    return sys_open(path, flags, mode);
+}
+
+static i64 sys_close(u64 fd)
+{
+    return fd_close((int)fd) == 0 ? 0 : ERR(EBADF);
+}
+
+static i64 sys_exit(u64 code)
+{
+    kprintf("[task] pid %d exit(%d)\n",
+            task_current() ? task_current()->pid : -1, (int)code);
+    task_exit_current((int)code);
+    return 0;
+}
+
+static i64 sys_yield(void)
+{
+    task_yield();
+    return 0;
+}
+
+static i64 sys_getpid(void)
+{
+    struct task *t = task_current();
+    return t ? t->pid : 1;
+}
+
+static i64 sys_uname(u64 buf)
+{
+    if (!user_ptr_ok((void *)(uintptr_t)buf, sizeof(struct helix_utsname)))
+        return ERR(EFAULT);
+    struct helix_utsname *u = (struct helix_utsname *)(uintptr_t)buf;
+    memset(u, 0, sizeof(*u));
+    /* Honest policy: sysname is Helix, not Linux (compat disguise would be documented). */
+    memcpy(u->sysname, "Helix", 6);
+    memcpy(u->nodename, "helix", 6);
+    memcpy(u->release, "0.5.0-m5", 9);
+    memcpy(u->version, "HelixOS M5 linux-compat subset", 31);
+    memcpy(u->machine, "x86_64", 7);
+    memcpy(u->domainname, "(none)", 7);
+    return 0;
+}
+
+static i64 sys_brk(u64 addr)
+{
+    struct task *t = task_current();
+    if (!t)
+        return 0;
+    if (t->brk_start == 0) {
+        t->brk_start = USER_BASE + 0x100000;
+        t->brk_curr = t->brk_start;
+    }
+    if (addr == 0)
+        return (i64)t->brk_curr;
+    if (addr < t->brk_start)
+        return (i64)t->brk_curr;
+    /* Ceiling: Helix high apps stop before stacks; classic low ELFs (BusyBox)
+     * may brk just above load_end toward 0x3F000000 (below low user stacks). */
+    u64 ceiling = (t->brk_start >= USER_BASE)
+                      ? (USER_STACK_TOP - USER_STACK_SIZE)
+                      : 0x3F000000ull;
+    if (addr >= ceiling)
+        return (i64)t->brk_curr;
+    u64 old = align_up_u64(t->brk_curr, PAGE_SIZE);
+    u64 neu = align_up_u64(addr, PAGE_SIZE);
+    for (u64 va = old; va < neu; va += PAGE_SIZE) {
+        if (!vmm_alloc_user_pages(va, 1, 1))
+            return (i64)t->brk_curr;
+    }
+    t->brk_curr = addr;
+    return (i64)t->brk_curr;
+}
+
+static i64 sys_getdents64(u64 fd, u64 buf, u64 count)
+{
+    if (!user_ptr_ok((void *)(uintptr_t)buf, count))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f)
+        return ERR(EBADF);
+    return vfs_getdents64(f, (void *)(uintptr_t)buf, count);
+}
+
+static i64 sys_fstat(u64 fd, u64 statbuf)
+{
+    if (!user_ptr_ok((void *)(uintptr_t)statbuf, 144))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f)
+        return ERR(EBADF);
+    return vfs_fstat(f, (void *)(uintptr_t)statbuf);
+}
+
+static i64 sys_newfstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags)
+{
+    (void)dirfd;
+    (void)flags;
+    if (!user_ptr_ok((void *)(uintptr_t)statbuf, 144))
+        return ERR(EFAULT);
+    char kpath[VFS_PATH_MAX];
+    if (copy_user_path(path, kpath, sizeof(kpath)) != 0)
+        return ERR(EFAULT);
+    struct vfs_file *f = 0;
+    if (vfs_open(kpath, &f) != 0)
+        return ERR(ENOENT);
+    long r = vfs_fstat(f, (void *)(uintptr_t)statbuf);
+    vfs_close(f);
+    return r;
+}
+
+static i64 sys_ioctl(u64 fd, u64 req, u64 arg)
+{
+    (void)arg;
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f)
+        return ERR(EBADF);
+    /* TCGETS etc. — stub success for tty probes on console */
+    if (f->is_console)
+        return 0;
+    (void)req;
+    return ERR(ENOSYS);
+}
+
+static i64 sys_fcntl(u64 fd, u64 cmd, u64 arg)
+{
+    (void)arg;
+    fd_init_task_stdio();
+    if (!fd_get((int)fd))
+        return ERR(EBADF);
+    if (cmd == 1) /* F_GETFD */
+        return 0;
+    if (cmd == 3) /* F_GETFL */
+        return 0;
+    return 0; /* soft stub */
+}
+
+static i64 sys_dup2(u64 oldfd, u64 newfd)
+{
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)oldfd);
+    if (!f)
+        return ERR(EBADF);
+    if (newfd >= 16)
+        return ERR(EBADF);
+    struct task *t = task_current();
+    struct vfs_file **tab = t ? t->fds : 0;
+    if (!tab)
+        return ERR(EBADF);
+    if (oldfd == newfd)
+        return (i64)newfd;
+    if (tab[newfd] && newfd > 2)
+        vfs_close(tab[newfd]);
+    tab[newfd] = f; /* share pointer; M5 no refcount */
+    return (i64)newfd;
+}
+
+static i64 sys_mmap(u64 addr, u64 len, u64 prot, u64 flags, u64 fd, u64 off)
+{
+    (void)prot;
+    (void)off;
+    (void)flags;
+    /* Anonymous only */
+    if (fd != (u64)-1 && fd != 0xffffffffffffffffull)
+        return ERR(ENOSYS);
+    if (len == 0)
+        return ERR(EINVAL);
+    len = align_up_u64(len, PAGE_SIZE);
+    u64 va = addr & ~0xFFFull;
+    if (addr == 0) {
+        static u64 anon_bump = USER_BASE + 0x2000000ull;
+        va = anon_bump;
+        anon_bump += len;
+        if (anon_bump >= USER_STACK_TOP - USER_STACK_SIZE)
+            return ERR(ENOMEM);
+    } else {
+        /* Fixed hint (BusyBox/musl often passes absolute VA in low classic range
+         * or high Helix window). Map page-by-page with fresh phys. */
+        if (!user_ptr_ok((void *)(uintptr_t)va, len) &&
+            !(va >= 0x400000ull && va + len <= 0x01000000ull) &&
+            !(va >= 0x50000000ull && va + len <= 0x51000000ull)) {
+            /* still try — user_ptr_ok is for syscall args; mmap creates the range */
+        }
+    }
+    if (!vmm_alloc_user_pages(va, len / PAGE_SIZE, 1))
+        return ERR(ENOMEM);
+    return (i64)va;
+}
+
+static i64 sys_getuid(void) { return 0; }
+static i64 sys_getgid(void) { return 0; }
+static i64 sys_geteuid(void) { return 0; }
+static i64 sys_getegid(void) { return 0; }
+static i64 sys_setuid(u64 uid) { (void)uid; return 0; }
+static i64 sys_setgid(u64 gid) { (void)gid; return 0; }
+static i64 sys_getppid(void) { return 1; }
+static i64 sys_writev(u64 fd, u64 iov, u64 iovcnt)
+{
+    /* Minimal: only support single iovec if buffer is user-ok */
+    if (iovcnt == 0)
+        return 0;
+    if (!user_ptr_ok((void *)(uintptr_t)iov, 16))
+        return ERR(EFAULT);
+    u64 base = *(u64 *)(uintptr_t)iov;
+    u64 len = *(u64 *)(uintptr_t)(iov + 8);
+    return sys_write(fd, base, len);
+}
+static i64 sys_stat_path(u64 path, u64 statbuf)
+{
+    /* Linux x86_64 nr 4 = stat */
+    return sys_newfstatat((u64)-100, path, statbuf, 0); /* AT_FDCWD */
+}
+
+static i64 sys_munmap(u64 addr, u64 len)
+{
+    (void)addr;
+    (void)len;
+    return 0; /* leak pages for now */
+}
+
+static i64 sys_mprotect(u64 addr, u64 len, u64 prot)
+{
+    (void)addr;
+    (void)len;
+    (void)prot;
+    return 0;
+}
+
+static i64 sys_rt_sigaction(void)
+{
+    return 0; /* ignore handlers */
+}
+
+static i64 sys_rt_sigprocmask(void)
+{
+    return 0;
+}
+
+static i64 sys_set_tid_address(u64 tidptr)
+{
+    (void)tidptr;
+    return task_current() ? task_current()->pid : 1;
+}
+
+static i64 sys_arch_prctl(u64 code, u64 addr)
+{
+    /* ARCH_SET_FS=0x1002, ARCH_GET_FS=0x1003, ARCH_SET_GS=0x1001 */
+    if (code == 0x1002) {
+        /* SET_FS — write FS_BASE MSR */
+        u32 lo = (u32)addr;
+        u32 hi = (u32)(addr >> 32);
+        __asm__ volatile("wrmsr" : : "c"(0xC0000100), "a"(lo), "d"(hi));
+        return 0;
+    }
+    if (code == 0x1003) {
+        if (!user_ptr_ok((void *)(uintptr_t)addr, 8))
+            return ERR(EFAULT);
+        u32 lo, hi;
+        __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000100));
+        *(u64 *)(uintptr_t)addr = ((u64)hi << 32) | lo;
+        return 0;
+    }
+    return ERR(EINVAL);
+}
+
+static i64 sys_clock_gettime(u64 clkid, u64 tp)
+{
+    (void)clkid;
+    if (!user_ptr_ok((void *)(uintptr_t)tp, 16))
+        return ERR(EFAULT);
+    extern u64 timer_ticks(void);
+    extern u32 timer_hz(void);
+    u64 t = timer_ticks();
+    u32 hz = timer_hz() ? timer_hz() : 100;
+    u64 sec = t / hz;
+    u64 nsec = (t % hz) * (1000000000ull / hz);
+    u64 *out = (u64 *)(uintptr_t)tp;
+    out[0] = sec;
+    out[1] = nsec;
+    return 0;
+}
+
+static i64 sys_getcwd(u64 buf, u64 size)
+{
+    if (size < 2 || !user_ptr_ok((void *)(uintptr_t)buf, size))
+        return ERR(EFAULT);
+    char *b = (char *)(uintptr_t)buf;
+    b[0] = '/';
+    b[1] = 0;
+    return (i64)buf;
+}
+
+u64 syscall_entry_c(struct syscall_frame *f)
+{
+    struct task *t = task_current();
+    if (t) {
+        t->regs.rip = f->user_rip;
+        t->regs.rflags = f->user_rflags;
+        t->regs.rsp = f->user_rsp;
+        t->regs.rax = f->nr;
+        t->regs.rdi = f->a0;
+        t->regs.rsi = f->a1;
+        t->regs.rdx = f->a2;
+        t->regs.r10 = f->a3;
+        t->regs.r8  = f->a4;
+        t->regs.r9  = f->a5;
+    }
+
+    i64 ret = ERR(ENOSYS);
+    switch (f->nr) {
+    case SYS_read:        ret = sys_read(f->a0, f->a1, f->a2); break;
+    case SYS_write:       ret = sys_write(f->a0, f->a1, f->a2); break;
+    case 20: /* writev */ ret = sys_writev(f->a0, f->a1, f->a2); break;
+    case 4:  /* stat */   ret = sys_stat_path(f->a0, f->a1); break;
+    case 102: /* getuid */ ret = sys_getuid(); break;
+    case 104: /* getgid */ ret = sys_getgid(); break;
+    case 107: /* geteuid */ ret = sys_geteuid(); break;
+    case 108: /* getegid */ ret = sys_getegid(); break;
+    case 105: /* setuid */ ret = sys_setuid(f->a0); break;
+    case 106: /* setgid */ ret = sys_setgid(f->a0); break;
+    case 110: /* getppid */ ret = sys_getppid(); break;
+    case SYS_open:        ret = sys_open(f->a0, f->a1, f->a2); break;
+    case SYS_close:       ret = sys_close(f->a0); break;
+    case SYS_fstat:       ret = sys_fstat(f->a0, f->a1); break;
+    case SYS_brk:         ret = sys_brk(f->a0); break;
+    case SYS_ioctl:       ret = sys_ioctl(f->a0, f->a1, f->a2); break;
+    case SYS_yield:       ret = sys_yield(); break;
+    case SYS_dup2:        ret = sys_dup2(f->a0, f->a1); break;
+    case SYS_getpid:      ret = sys_getpid(); break;
+    case SYS_fcntl:       ret = sys_fcntl(f->a0, f->a1, f->a2); break;
+    case SYS_getcwd:      ret = sys_getcwd(f->a0, f->a1); break;
+    case SYS_mkdir:       ret = sys_mkdir(f->a0, f->a1); break;
+    case SYS_mmap:        ret = sys_mmap(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
+    case SYS_mprotect:    ret = sys_mprotect(f->a0, f->a1, f->a2); break;
+    case SYS_munmap:      ret = sys_munmap(f->a0, f->a1); break;
+    case SYS_rt_sigaction: ret = sys_rt_sigaction(); break;
+    case SYS_rt_sigprocmask: ret = sys_rt_sigprocmask(); break;
+    case SYS_arch_prctl:   ret = sys_arch_prctl(f->a0, f->a1); break;
+    case SYS_set_tid_address: ret = sys_set_tid_address(f->a0); break;
+    case SYS_clock_gettime: ret = sys_clock_gettime(f->a0, f->a1); break;
+    case SYS_exit:
+    case SYS_exit_group:  ret = sys_exit(f->a0); break;
+    case SYS_uname:       ret = sys_uname(f->a0); break;
+    case SYS_getdents64:  ret = sys_getdents64(f->a0, f->a1, f->a2); break;
+    case SYS_openat:      ret = sys_openat(f->a0, f->a1, f->a2, f->a3); break;
+    case SYS_newfstatat:  ret = sys_newfstatat(f->a0, f->a1, f->a2, f->a3); break;
+    default:
+        kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
+        ret = ERR(ENOSYS);
+        break;
+    }
+
+    if (t && task_current() == t)
+        t->regs.rax = (u64)ret;
+
+    t = task_current();
+    if (t && t->state == TASK_RUNNING) {
+        f->user_rip = t->regs.rip;
+        f->user_rflags = t->regs.rflags | 0x200;
+        f->user_rsp = t->regs.rsp;
+        g_syscall_kstack = t->kernel_stack_top;
+        ret = (i64)t->regs.rax;
+        fd_init_task_stdio();
+    }
+    return (u64)ret;
+}
+
+void syscall_init(void)
+{
+    u32 lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0xC0000080));
+    lo |= (1u << 0);
+    __asm__ volatile("wrmsr" : : "c"(0xC0000080), "a"(lo), "d"(hi));
+
+    u32 star_lo = 0;
+    u32 star_hi = (0x13u << 16) | 0x08u;
+    __asm__ volatile("wrmsr" : : "c"(0xC0000081), "a"(star_lo), "d"(star_hi));
+
+    u64 entry = (u64)(uintptr_t)syscall_entry_asm;
+    __asm__ volatile("wrmsr" : : "c"(0xC0000082),
+                     "a"((u32)entry), "d"((u32)(entry >> 32)));
+    __asm__ volatile("wrmsr" : : "c"(0xC0000084), "a"(0x200u), "d"(0));
+
+    g_syscall_kstack = 0;
+    g_syscall_user_rsp = 0;
+    kprintf("[syscall] SCE on, LSTAR=0x%llx (M5 ENOSYS default)\n",
+            (unsigned long long)entry);
+}
