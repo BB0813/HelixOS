@@ -32,6 +32,7 @@ struct fat_file {
     u32 start_clus;
     u64 size;
     u64 pos;
+    char name83[11]; /* for dirent updates after write */
 };
 
 static struct fat_fs g_fat;
@@ -475,28 +476,83 @@ static int fat_readdir_root(void (*cb)(const char *name, u64 size, void *user), 
     return 0;
 }
 
-/* ---- FAT16 write support (ESP is FAT16). FAT32 write deferred. ---- */
+/* ---- FAT16/FAT32 write (root create/write/mkdir). FAT12 write not supported. ---- */
+
+static int fat_writable_type(void)
+{
+    return g_fat.fat_type == 16 || g_fat.fat_type == 32;
+}
+
+static u32 fat_eof_mark(void)
+{
+    return g_fat.fat_type == 32 ? 0x0FFFFFF8u : 0xFFF8u;
+}
+
+/* AHCI PRDT needs a stable identity-mapped buffer; avoid small stack temps. */
+static u8 g_sec_bounce[512] __attribute__((aligned(16)));
 
 static int write_sector(u64 rel_lba, const void *buf)
 {
-    return blk_write(g_fat.part_lba + rel_lba, 1, buf);
+    memcpy(g_sec_bounce, buf, 512);
+    return blk_write(g_fat.part_lba + rel_lba, 1, g_sec_bounce);
 }
 
-static int fat_put16(u32 clus, u16 val)
+static int write_sectors(u64 rel_lba, u32 n, const void *buf)
 {
-    if (g_fat.fat_type != 16)
-        return -1;
-    u32 off = clus * 2;
-    u32 sec_i = off / g_fat.byts_per_sec;
-    u32 ent = off % g_fat.byts_per_sec;
+    const u8 *p = buf;
+    for (u32 i = 0; i < n; i++) {
+        if (write_sector(rel_lba + i, p + i * 512) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int fat_put(u32 clus, u32 val)
+{
     u8 sec[512];
-    if (read_sector(g_fat.first_fat_lba + sec_i, sec) != 0)
-        return -1;
-    sec[ent] = (u8)(val & 0xFF);
-    sec[ent + 1] = (u8)(val >> 8);
-    /* Write all FAT copies */
-    for (u8 f = 0; f < g_fat.num_fats; f++) {
-        if (write_sector(g_fat.first_fat_lba + f * g_fat.fatsz + sec_i, sec) != 0)
+    if (g_fat.fat_type == 32) {
+        u32 off = clus * 4;
+        u32 sec_i = off / g_fat.byts_per_sec;
+        u32 ent = off % g_fat.byts_per_sec;
+        if (read_sector(g_fat.first_fat_lba + sec_i, sec) != 0)
+            return -1;
+        /* Keep top 4 bits of FAT32 entry */
+        u32 old = sec[ent] | (sec[ent + 1] << 8) | (sec[ent + 2] << 16) | (sec[ent + 3] << 24);
+        u32 neu = (old & 0xF0000000u) | (val & 0x0FFFFFFFu);
+        sec[ent] = (u8)(neu & 0xFF);
+        sec[ent + 1] = (u8)((neu >> 8) & 0xFF);
+        sec[ent + 2] = (u8)((neu >> 16) & 0xFF);
+        sec[ent + 3] = (u8)((neu >> 24) & 0xFF);
+        for (u8 f = 0; f < g_fat.num_fats; f++) {
+            if (write_sector(g_fat.first_fat_lba + f * g_fat.fatsz + sec_i, sec) != 0)
+                return -1;
+        }
+        return 0;
+    }
+    if (g_fat.fat_type == 16) {
+        u32 off = clus * 2;
+        u32 sec_i = off / g_fat.byts_per_sec;
+        u32 ent = off % g_fat.byts_per_sec;
+        if (read_sector(g_fat.first_fat_lba + sec_i, sec) != 0)
+            return -1;
+        sec[ent] = (u8)(val & 0xFF);
+        sec[ent + 1] = (u8)((val >> 8) & 0xFF);
+        for (u8 f = 0; f < g_fat.num_fats; f++) {
+            if (write_sector(g_fat.first_fat_lba + f * g_fat.fatsz + sec_i, sec) != 0)
+                return -1;
+        }
+        return 0;
+    }
+    return -1;
+}
+
+static int zero_cluster(u32 clus)
+{
+    u8 z[512];
+    memset(z, 0, sizeof(z));
+    u32 lba = clus_to_lba(clus);
+    for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
+        if (write_sector(lba + s, z) != 0)
             return -1;
     }
     return 0;
@@ -504,42 +560,67 @@ static int fat_put16(u32 clus, u16 val)
 
 static u32 fat_alloc_cluster(void)
 {
-    if (g_fat.fat_type != 16)
+    if (!fat_writable_type())
         return 0;
     for (u32 c = 2; c < g_fat.data_clusters + 2; c++) {
-        u32 v = fat_get(c);
-        if (v == 0) {
-            if (fat_put16(c, 0xFFFF) != 0)
+        if (fat_get(c) == 0) {
+            if (fat_put(c, fat_eof_mark()) != 0)
                 return 0;
-            /* zero the cluster */
-            u8 z[512];
-            memset(z, 0, sizeof(z));
-            u32 lba = clus_to_lba(c);
-            for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
-                if (write_sector(lba + s, z) != 0)
-                    return 0;
-            }
+            if (zero_cluster(c) != 0)
+                return 0;
             return c;
         }
     }
     return 0;
 }
 
-/* Find free 32-byte slot in FAT16 root; returns 0 on success with out_lba/out_off. */
-static int root_find_free_slot(u64 *out_lba, u32 *out_off, u8 *sec_out)
+/* Free dirent slot: FAT16 fixed root, or FAT32 root cluster chain (extend if full). */
+static int dir_find_free_slot(u32 dir_clus, u64 *out_lba, u32 *out_off, u8 *sec_out)
 {
-    for (u32 s = 0; s < g_fat.root_sectors; s++) {
-        if (read_sector(g_fat.root_lba + s, sec_out) != 0)
-            return -1;
-        for (u32 i = 0; i < 512; i += 32) {
-            if (sec_out[i] == 0 || sec_out[i] == 0xE5) {
-                *out_lba = g_fat.root_lba + s;
-                *out_off = i;
-                return 0;
+    if (dir_clus == 0 && g_fat.fat_type != 32) {
+        for (u32 s = 0; s < g_fat.root_sectors; s++) {
+            if (read_sector(g_fat.root_lba + s, sec_out) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                if (sec_out[i] == 0 || sec_out[i] == 0xE5) {
+                    *out_lba = g_fat.root_lba + s;
+                    *out_off = i;
+                    return 0;
+                }
             }
         }
+        return -1;
     }
-    return -1;
+
+    u32 clus = dir_clus ? dir_clus : g_fat.root_clus;
+    u32 prev = 0;
+    while (!fat_is_eof(clus) && clus >= 2) {
+        for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
+            u32 lba = clus_to_lba(clus) + s;
+            if (read_sector(lba, sec_out) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                if (sec_out[i] == 0 || sec_out[i] == 0xE5) {
+                    *out_lba = lba;
+                    *out_off = i;
+                    return 0;
+                }
+            }
+        }
+        prev = clus;
+        clus = fat_get(clus);
+    }
+    /* Extend directory cluster chain */
+    u32 neu = fat_alloc_cluster();
+    if (!neu || !prev)
+        return -1;
+    if (fat_put(prev, neu) != 0)
+        return -1;
+    *out_lba = clus_to_lba(neu);
+    *out_off = 0;
+    if (read_sector(*out_lba, sec_out) != 0)
+        return -1;
+    return 0;
 }
 
 static void fill_83_dirent(u8 *e, const char name83[11], u8 attr, u32 clus, u32 size)
@@ -547,6 +628,8 @@ static void fill_83_dirent(u8 *e, const char name83[11], u8 attr, u32 clus, u32 
     memset(e, 0, 32);
     memcpy(e, name83, 11);
     e[11] = attr;
+    e[20] = (u8)((clus >> 16) & 0xFF);
+    e[21] = (u8)((clus >> 24) & 0xFF);
     e[26] = (u8)(clus & 0xFF);
     e[27] = (u8)((clus >> 8) & 0xFF);
     e[28] = (u8)(size & 0xFF);
@@ -555,31 +638,89 @@ static void fill_83_dirent(u8 *e, const char name83[11], u8 attr, u32 clus, u32 
     e[31] = (u8)((size >> 24) & 0xFF);
 }
 
+/* Update size/start of a root entry matching 8.3 name. */
+static int root_update_dirent(const char name83[11], u32 start_clus, u32 size)
+{
+    u8 sec[512];
+    if (g_fat.fat_type != 32) {
+        for (u32 s = 0; s < g_fat.root_sectors; s++) {
+            if (read_sector(g_fat.root_lba + s, sec) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0)
+                    return -1;
+                if (e[0] == 0xE5 || e[11] == 0x0F)
+                    continue;
+                if (memcmp(e, name83, 11) != 0)
+                    continue;
+                e[20] = (u8)((start_clus >> 16) & 0xFF);
+                e[21] = (u8)((start_clus >> 24) & 0xFF);
+                e[26] = (u8)(start_clus & 0xFF);
+                e[27] = (u8)((start_clus >> 8) & 0xFF);
+                e[28] = (u8)(size & 0xFF);
+                e[29] = (u8)((size >> 8) & 0xFF);
+                e[30] = (u8)((size >> 16) & 0xFF);
+                e[31] = (u8)((size >> 24) & 0xFF);
+                return write_sector(g_fat.root_lba + s, sec);
+            }
+        }
+        return -1;
+    }
+
+    u32 clus = g_fat.root_clus;
+    while (!fat_is_eof(clus) && clus >= 2) {
+        for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
+            u32 lba = clus_to_lba(clus) + s;
+            if (read_sector(lba, sec) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0)
+                    return -1;
+                if (e[0] == 0xE5 || e[11] == 0x0F)
+                    continue;
+                if (memcmp(e, name83, 11) != 0)
+                    continue;
+                e[20] = (u8)((start_clus >> 16) & 0xFF);
+                e[21] = (u8)((start_clus >> 24) & 0xFF);
+                e[26] = (u8)(start_clus & 0xFF);
+                e[27] = (u8)((start_clus >> 8) & 0xFF);
+                e[28] = (u8)(size & 0xFF);
+                e[29] = (u8)((size >> 8) & 0xFF);
+                e[30] = (u8)((size >> 16) & 0xFF);
+                e[31] = (u8)((size >> 24) & 0xFF);
+                return write_sector(lba, sec);
+            }
+        }
+        clus = fat_get(clus);
+    }
+    return -1;
+}
+
 /* Create empty file or dir in root only (path like "FOO.TXT" or "BAR"). */
 static int fat_create_root(const char *path, int is_dir, u32 *out_clus)
 {
-    if (g_fat.fat_type != 16)
+    if (!fat_writable_type())
         return -1;
     while (*path == '/')
         path++;
-    /* no subdirs for create yet */
     for (const char *p = path; *p; p++) {
         if (*p == '/')
-            return -1;
+            return -1; /* root only */
     }
     char w[11];
     encode_83_upper(path, w);
-    /* exists? */
     u32 cl0, sz0;
     u8 attr0;
-    if (find_in_dir(0, w, &cl0, &sz0, &attr0) == 0)
+    u32 root_key = (g_fat.fat_type == 32) ? g_fat.root_clus : 0;
+    if (find_in_dir(root_key, w, &cl0, &sz0, &attr0) == 0)
         return -1; /* EEXIST */
 
     u32 cl = fat_alloc_cluster();
     if (!cl)
         return -1;
     if (is_dir) {
-        /* . and .. entries */
         u8 dirsec[512];
         memset(dirsec, 0, sizeof(dirsec));
         char dot[11];
@@ -589,14 +730,17 @@ static int fat_create_root(const char *path, int is_dir, u32 *out_clus)
         memset(dot, ' ', 11);
         dot[0] = '.';
         dot[1] = '.';
-        fill_83_dirent(dirsec + 32, dot, 0x10, 0, 0);
-        if (write_sector(clus_to_lba(cl), dirsec) != 0)
+        fill_83_dirent(dirsec + 32, dot, 0x10,
+                       g_fat.fat_type == 32 ? g_fat.root_clus : 0, 0);
+        if (write_sectors(clus_to_lba(cl), 1, dirsec) != 0)
             return -1;
+        /* remaining sectors of cluster already zeroed by alloc */
     }
+
     u8 sec[512];
     u64 lba;
     u32 off;
-    if (root_find_free_slot(&lba, &off, sec) != 0)
+    if (dir_find_free_slot(root_key, &lba, &off, sec) != 0)
         return -1;
     fill_83_dirent(sec + off, w, is_dir ? 0x10 : 0x20, cl, 0);
     if (write_sector(lba, sec) != 0)
@@ -609,13 +753,13 @@ static int fat_create_root(const char *path, int is_dir, u32 *out_clus)
 static int fat_write_file(struct vfs_file *f, const void *buf, u64 len, u64 *out_n)
 {
     struct fat_file *ff = f->fs_priv;
-    if (!ff || !f->writable || g_fat.fat_type != 16)
+    if (!ff || !f->writable || !fat_writable_type())
         return -1;
     if (len == 0) {
         *out_n = 0;
         return 0;
     }
-    /* Simple path: only support write from pos 0 growing file, single/multi cluster */
+
     u32 clus_size = (u32)g_fat.sec_per_clus * g_fat.byts_per_sec;
     if (ff->start_clus < 2) {
         u32 cl = fat_alloc_cluster();
@@ -628,7 +772,6 @@ static int fat_write_file(struct vfs_file *f, const void *buf, u64 len, u64 *out
     u64 remain = len;
     u64 pos = ff->pos;
     u32 clus = ff->start_clus;
-    /* walk to cluster for pos */
     u64 skip = pos / clus_size;
     while (skip--) {
         u32 n = fat_get(clus);
@@ -636,7 +779,7 @@ static int fat_write_file(struct vfs_file *f, const void *buf, u64 len, u64 *out
             n = fat_alloc_cluster();
             if (!n)
                 return -1;
-            if (fat_put16(clus, (u16)n) != 0)
+            if (fat_put(clus, n) != 0)
                 return -1;
             clus = n;
         } else {
@@ -657,12 +800,9 @@ static int fat_write_file(struct vfs_file *f, const void *buf, u64 len, u64 *out
         if (chunk > remain)
             chunk = (u32)remain;
         memcpy(secbuf + off_in, src, chunk);
-        /* write cluster back */
-        for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
-            if (write_sector(clus_to_lba(clus) + s, secbuf + s * 512) != 0) {
-                kfree(secbuf);
-                return -1;
-            }
+        if (write_sectors(clus_to_lba(clus), g_fat.sec_per_clus, secbuf) != 0) {
+            kfree(secbuf);
+            return -1;
         }
         src += chunk;
         remain -= chunk;
@@ -676,7 +816,7 @@ static int fat_write_file(struct vfs_file *f, const void *buf, u64 len, u64 *out
                     kfree(secbuf);
                     return -1;
                 }
-                if (fat_put16(clus, (u16)n) != 0) {
+                if (fat_put(clus, n) != 0) {
                     kfree(secbuf);
                     return -1;
                 }
@@ -693,32 +833,8 @@ static int fat_write_file(struct vfs_file *f, const void *buf, u64 len, u64 *out
     f->pos = ff->pos;
     f->size = ff->size;
 
-    /* Update root dirent size + start cluster */
-    char w[11];
-    /* We don't store name on fat_file — scan root for matching start_clus */
-    u8 sec[512];
-    for (u32 s = 0; s < g_fat.root_sectors; s++) {
-        if (read_sector(g_fat.root_lba + s, sec) != 0)
-            break;
-        for (u32 i = 0; i < 512; i += 32) {
-            u8 *e = &sec[i];
-            if (e[0] == 0)
-                break;
-            if (e[0] == 0xE5 || e[11] == 0x0F)
-                continue;
-            u32 c = e[26] | (e[27] << 8);
-            if (c == ff->start_clus) {
-                e[28] = (u8)(ff->size & 0xFF);
-                e[29] = (u8)((ff->size >> 8) & 0xFF);
-                e[30] = (u8)((ff->size >> 16) & 0xFF);
-                e[31] = (u8)((ff->size >> 24) & 0xFF);
-                write_sector(g_fat.root_lba + s, sec);
-                s = g_fat.root_sectors;
-                break;
-            }
-        }
-    }
-    (void)w;
+    if (root_update_dirent(ff->name83, ff->start_clus, (u32)ff->size) != 0)
+        kprintf("[fat] warning: dirent update failed\n");
     *out_n = len;
     return 0;
 }
@@ -726,7 +842,7 @@ static int fat_write_file(struct vfs_file *f, const void *buf, u64 len, u64 *out
 static int fat_mkdir_rw(const char *path, int mode)
 {
     (void)mode;
-    if (g_fat.fat_type != 16)
+    if (!fat_writable_type())
         return -1;
     return fat_create_root(path, 1, 0);
 }
@@ -751,21 +867,31 @@ static int fat_open(const char *path, int flags, struct vfs_file **out)
     u32 cl = 0, sz = 0;
     int need_create = (flags & VFS_O_CREAT) != 0;
     if (fat_resolve(path, &cl, &sz) != 0) {
-        if (!need_create || g_fat.fat_type != 16)
+        if (!need_create || !fat_writable_type())
             return -1;
         if (fat_create_root(path, 0, &cl) != 0)
             return -1;
         sz = 0;
-    } else if ((flags & VFS_O_TRUNC) && g_fat.fat_type == 16) {
-        /* Truncate: mark only first cluster EOF and size 0 (leak old chain — M4 min) */
+    } else if ((flags & VFS_O_TRUNC) && fat_writable_type()) {
+        /* Truncate: mark first cluster EOF, size 0 (may leak old chain). */
         if (cl >= 2)
-            fat_put16(cl, 0xFFFF);
+            fat_put(cl, fat_eof_mark());
         sz = 0;
     }
 
     struct fat_file *ff = kmalloc(sizeof(*ff));
     if (!ff)
         return -1;
+    memset(ff, 0, sizeof(*ff));
+    encode_83_upper(path, ff->name83);
+    /* path may be /HELIXW.TXT — encode_83_upper uses whole string; strip dirs */
+    {
+        const char *leaf = path;
+        for (const char *q = path; *q; q++)
+            if (*q == '/')
+                leaf = q + 1;
+        encode_83_upper(leaf, ff->name83);
+    }
     ff->start_clus = cl;
     ff->size = sz;
     ff->pos = (flags & VFS_O_APPEND) ? sz : 0;
@@ -856,18 +982,17 @@ int fat_mount(u64 part_lba, u64 part_sectors)
     kprintf("[fat] mounted FAT%u spc=%u fatsz=%u root_ent=%u data_lba=%u clusters=%u\n",
             g_fat.fat_type, g_fat.sec_per_clus, g_fat.fatsz, g_fat.root_ent_cnt,
             g_fat.data_lba, g_fat.data_clusters);
-    if (g_fat.fat_type == 16)
-        kprintf("[fat] write/mkdir enabled on root (FAT16)\n");
+    if (g_fat.fat_type == 16 || g_fat.fat_type == 32)
+        kprintf("[fat] write/mkdir enabled on root (FAT%u)\n", g_fat.fat_type);
     else
-        kprintf("[fat] write/mkdir disabled (need FAT16 ESP)\n");
+        kprintf("[fat] write/mkdir disabled (FAT%u)\n", g_fat.fat_type);
     return 0;
 }
 
-/* Create/write/readback HELIXW.TXT in root — proves AHCI write + FAT update. */
 int fat_selftest_write(void)
 {
-    if (!g_fat.ready || g_fat.fat_type != 16) {
-        kprintf("[fat] selftest skip (not FAT16)\n");
+    if (!g_fat.ready || !fat_writable_type()) {
+        kprintf("[fat] selftest skip (need FAT16/32)\n");
         return -1;
     }
 
@@ -877,6 +1002,33 @@ int fat_selftest_write(void)
     while (payload[plen])
         plen++;
 
+    /* Delete stale entry if present so create is clean across boots on same img. */
+    {
+        char w[11];
+        encode_83_upper("HELIXW.TXT", w);
+        u32 cl0, sz0;
+        u8 attr0;
+        u32 root_key = (g_fat.fat_type == 32) ? g_fat.root_clus : 0;
+        if (find_in_dir(root_key, w, &cl0, &sz0, &attr0) == 0) {
+            /* mark deleted in root */
+            u8 sec[512];
+            if (g_fat.fat_type != 32) {
+                for (u32 s = 0; s < g_fat.root_sectors; s++) {
+                    if (read_sector(g_fat.root_lba + s, sec) != 0)
+                        break;
+                    for (u32 i = 0; i < 512; i += 32) {
+                        if (memcmp(&sec[i], w, 11) == 0) {
+                            sec[i] = 0xE5;
+                            write_sector(g_fat.root_lba + s, sec);
+                            s = g_fat.root_sectors;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     struct vfs_file *f = 0;
     if (fat_open(path, VFS_O_CREAT | VFS_O_TRUNC | VFS_O_WRONLY, &f) != 0) {
         kprintf("[fat] selftest open-create failed\n");
@@ -884,13 +1036,20 @@ int fat_selftest_write(void)
     }
     u64 nw = 0;
     if (fat_write_file(f, payload, plen, &nw) != 0 || nw != plen) {
-        kprintf("[fat] selftest write failed\n");
+        kprintf("[fat] selftest write failed nw=%llu\n", (unsigned long long)nw);
         fat_close(f);
         return -1;
     }
     fat_close(f);
 
-    /* Re-open read-only and verify */
+    /* Resolve via path lookup (proves dirent visible) */
+    u32 cl = 0, sz = 0;
+    if (fat_resolve(path, &cl, &sz) != 0) {
+        kprintf("[fat] selftest resolve after write failed\n");
+        return -1;
+    }
+    kprintf("[fat] selftest resolved clus=%u size=%u\n", cl, sz);
+
     f = 0;
     if (fat_open(path, VFS_O_RDONLY, &f) != 0) {
         kprintf("[fat] selftest reopen failed\n");
@@ -900,8 +1059,8 @@ int fat_selftest_write(void)
     memset(buf, 0, sizeof(buf));
     u64 nr = 0;
     if (fat_read_file(f, buf, sizeof(buf) - 1, &nr) != 0 || nr != plen) {
-        kprintf("[fat] selftest readback size mismatch nr=%llu\n",
-                (unsigned long long)nr);
+        kprintf("[fat] selftest readback size mismatch nr=%llu expect=%llu\n",
+                (unsigned long long)nr, (unsigned long long)plen);
         fat_close(f);
         return -1;
     }
@@ -910,7 +1069,7 @@ int fat_selftest_write(void)
         kprintf("[fat] selftest content mismatch\n");
         return -1;
     }
-    kprintf("[fat] selftest OK: %s", payload); /* payload has newline */
+    kprintf("[fat] selftest OK (FAT%u): %s", g_fat.fat_type, payload);
     kprintf("[fs] HelixFATWriteOK\n");
     return 0;
 }

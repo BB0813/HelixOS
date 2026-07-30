@@ -13,9 +13,11 @@ struct blk_dev {
     void *cmd_list;     /* 1K-aligned command list */
     void *fis_base;     /* 256-aligned received FIS */
     void *cmd_table;    /* command table + PRDT */
+    void *dma_buf;      /* 4KiB identity-mapped I/O bounce */
 };
 
 int  blk_init(void);
 int  blk_read(u64 lba, u32 count, void *buf);
 int  blk_write(u64 lba, u32 count, const void *buf);
 int  blk_ready(void);
+void *blk_dma_buf(void);

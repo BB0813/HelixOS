@@ -1,4 +1,4 @@
-# HelixOS top-level build (M0–M6)
+# HelixOS top-level build (M0–M7)
 #
 # Produces: out/BOOTX64.EFI (+ embedded user ELFs)
 # ESP also gets hello.txt, bin/*, lib/ld-helix.so, bin/hello.dyn
@@ -51,7 +51,8 @@ C_SRCS := \
 	kernel/arch/x86_64/idt.c kernel/arch/x86_64/pic.c \
 	kernel/arch/x86_64/pit.c kernel/arch/x86_64/timer.c \
 	kernel/arch/x86_64/irq.c \
-	kernel/drv/blk_ahci.c \
+	kernel/drv/blk_ahci.c kernel/drv/virtio_net.c kernel/drv/e1000.c \
+	kernel/net/nic.c kernel/net/net.c \
 	kernel/fs/fat.c kernel/fs/vfs.c kernel/fs/fs.c kernel/fs/ramfs.c \
 	kernel/proc/elf.c kernel/proc/syscall.c kernel/proc/task.c \
 	kernel/proc/userland.c kernel/proc/exec.c
@@ -77,17 +78,18 @@ ifdef HELIX_M1_TEST_PF
 endif
 
 .PHONY: all clean esp run user check-deps dirs help fetch-busybox \
-	smoke smoke-user smoke-fs smoke-linux smoke-dyn smoke-shell smoke-panic
+	smoke smoke-user smoke-fs smoke-linux smoke-dyn smoke-shell smoke-panic \
+	smoke-net
 
 all: $(OUT)/BOOTX64.EFI
 
 help:
-	@echo "HelixOS: all user esp run smoke smoke-user smoke-fs smoke-linux smoke-dyn clean"
+	@echo "HelixOS: all user esp run smoke* smoke-net clean"
 
 dirs:
 	$(MKDIR) $(BUILD)/boot $(BUILD)/libk $(BUILD)/kernel/ke $(BUILD)/kernel/mm \
 		$(BUILD)/kernel/arch/x86_64 $(BUILD)/kernel/proc $(BUILD)/kernel/drv \
-		$(BUILD)/kernel/fs $(BUILD)/user $(GEN) $(OUT)
+		$(BUILD)/kernel/fs $(BUILD)/kernel/net $(BUILD)/user $(GEN) $(OUT)
 
 $(BUILD)/user/init.o: user/init.c user/usys.h | dirs
 	$(CC) $(USER_CFLAGS) -c $< -o $@
@@ -214,3 +216,13 @@ check-deps:
 
 clean:
 	$(RM_RF) $(BUILD) $(OUT) $(ESP) $(GEN) $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
+
+smoke-net: esp
+	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
+	@HEADLESS=1 TIMEOUT_SECS=75 bash $(ROOT)/scripts/run-qemu.sh || true
+	@grep -a -F -q "M7 net ready" $(ROOT)/serial.log || { echo SMOKE-NET FAIL M7; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "10.0.2.15" $(ROOT)/serial.log || { echo SMOKE-NET FAIL IP; exit 1; }
+	@grep -a -F -q "HelixNetOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixNetOK; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "ICMP echo reply" $(ROOT)/serial.log || { echo SMOKE-NET FAIL ICMP; exit 1; }
+	@echo SMOKE-NET OK
+	@grep -a -E 'net|arp|icmp|HelixNet' $(ROOT)/serial.log | head -40

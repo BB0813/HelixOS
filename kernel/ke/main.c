@@ -16,6 +16,7 @@
 #include "helix/fs.h"
 #include "helix/string.h"
 #include "helix/cpuio.h"
+#include "helix/net.h"
 
 void kernel_idle_loop(void)
 {
@@ -25,6 +26,7 @@ void kernel_idle_loop(void)
     for (;;) {
         shell_poll();
         timer_poll_heartbeat();
+        net_poll();
         cpu_idle();
     }
 }
@@ -105,10 +107,26 @@ void kernel_early_main(struct helix_boot_info *info)
     else
         kprintf("[Helix] M4 fs ready\n");
 
+    if (net_init() != 0)
+        kprintf("[Helix] net_init failed (continuing without NIC)\n");
+
     shell_init(info);
     irq_enable();
 
     kprintf("[Helix] M2 shell ready (type help)\n");
+
+    /* Give ARP/ICMP self-test a few seconds before long userland smoke. */
+    if (net_ready()) {
+        u64 start = timer_ticks();
+        u32 hz = timer_hz() ? timer_hz() : 100;
+        while (timer_ticks() - start < (u64)hz * 8ull) {
+            net_poll();
+            timer_poll_heartbeat();
+            /* brief pause so timer IRQs advance */
+            for (volatile int i = 0; i < 10000; i++)
+                ;
+        }
+    }
 
     /* M3/M4 cooperative demo; on completion hook runs M5 helixbox smoke. */
     userland_start();

@@ -204,14 +204,17 @@ int blk_init(void)
     u64 cl = pmm_alloc_page();
     u64 fb = pmm_alloc_page();
     u64 ct = pmm_alloc_page();
-    if (!cl || !fb || !ct)
+    u64 db = pmm_alloc_page(); /* data bounce for DMA */
+    if (!cl || !fb || !ct || !db)
         return -1;
     memset((void *)(uintptr_t)cl, 0, PAGE_SIZE);
     memset((void *)(uintptr_t)fb, 0, PAGE_SIZE);
     memset((void *)(uintptr_t)ct, 0, PAGE_SIZE);
+    memset((void *)(uintptr_t)db, 0, PAGE_SIZE);
     g_blk.cmd_list = (void *)(uintptr_t)cl;
     g_blk.fis_base = (void *)(uintptr_t)fb;
     g_blk.cmd_table = (void *)(uintptr_t)ct;
+    g_blk.dma_buf = (void *)(uintptr_t)db;
 
     *mm_u32(port, PORT_CLB)  = (u32)cl;
     *mm_u32(port, PORT_CLBU) = 0;
@@ -285,9 +288,16 @@ static int blk_rw(u64 lba, u32 count, void *buf, int is_write)
     cfis[12] = (u8)(count & 0xFF);
     cfis[13] = (u8)((count >> 8) & 0xFF);
 
-    tbl->prdt[0].dba  = (u32)(uintptr_t)buf;
+    /* Always DMA through identity-mapped bounce (caller buf may be stack/heap). */
+    u32 nbytes = count * BLK_SECTOR_SIZE;
+    if (nbytes > 4096)
+        return -1;
+    if (is_write)
+        memcpy(g_blk.dma_buf, buf, nbytes);
+
+    tbl->prdt[0].dba  = (u32)(uintptr_t)g_blk.dma_buf;
     tbl->prdt[0].dbau = 0;
-    tbl->prdt[0].dbc  = (count * BLK_SECTOR_SIZE) - 1;
+    tbl->prdt[0].dbc  = nbytes - 1;
     tbl->prdt[0].dbc |= (1u << 31);
 
     *mm_u32(port, PORT_IS) = 0xFFFFFFFF;
@@ -307,6 +317,8 @@ static int blk_rw(u64 lba, u32 count, void *buf, int is_write)
                 is_write ? "write" : "read", (unsigned long long)lba);
         return -1;
     }
+    if (!is_write)
+        memcpy(buf, g_blk.dma_buf, nbytes);
     return 0;
 }
 
@@ -318,4 +330,9 @@ int blk_read(u64 lba, u32 count, void *buf)
 int blk_write(u64 lba, u32 count, const void *buf)
 {
     return blk_rw(lba, count, (void *)buf, 1);
+}
+
+void *blk_dma_buf(void)
+{
+    return g_blk.dma_buf;
 }

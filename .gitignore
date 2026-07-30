@@ -30,6 +30,7 @@ Thumbs.db
 *.swp
 *~
 .vscode/
+.vs/
 .idea/
 *.user
 

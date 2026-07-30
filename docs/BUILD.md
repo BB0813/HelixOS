@@ -12,7 +12,9 @@
 | `make smoke-user` | 无头启动；要求 Ring3 `write` / `yield` / `exit` / `M3 userland OK` |
 | `make smoke-fs` | AHCI+FAT；`HelixFS OK` + **`HelixFATWriteOK`**（盘上写回） |
 | `make smoke-linux` | BusyBox `echo` 和/或 helixbox smoke |
-| `make smoke-dyn` | **M6**：`PT_INTERP` + `ld-helix` → **`HelloDynOK`** |
+| `make smoke-dyn` | **M6**：`PT_INTERP` + `ld-helix` → **`HelloDynOK`**（若 Makefile 有该目标） |
+| `make smoke-musl` | **M6**：真 musl → **`HelloMuslDynOK`** |
+| `make smoke-net` | **M7**：e1000 + ARP/ICMP → **`HelixNetOK`** |
 | `make smoke-panic` | `-DHELIX_M1_TEST_PF`，断言 `#PF` panic |
 | `make user` | user ELF + `ld-helix.so` + `hello.dyn` + generated headers |
 | `make fetch-busybox` | 下载可选静态 BusyBox 到 `third_party/busybox/` |
@@ -73,6 +75,32 @@ make run
 - `/usr/share/OVMF/OVMF_CODE.fd` + `OVMF_VARS.fd`
 - `/usr/share/edk2/ovmf/OVMF_CODE.fd`
 - `/usr/share/qemu/OVMF.fd`（部分发行版合并镜像）
+
+## M7 networking (QEMU user mode)
+
+`scripts/run-qemu.sh` 默认：
+
+```text
+-netdev user,id=net0,net=10.0.2.0/24,host=10.0.2.2
+-device e1000,netdev=net0
+```
+
+| 项 | 值 |
+|----|-----|
+| Guest IP | **`10.0.2.15/24`**（静态，内核写死） |
+| Gateway / “host” | `10.0.2.2`（QEMU SLIRP） |
+| 驱动 | **e1000** 主路径；`virtio-net-pci` 代码保留为后备 |
+| 验收 | 内核 ARP 解析网关 + ICMP echo → 串口 **`HelixNetOK`** |
+| 宿主机 ping guest | user 网下通常 **不通**；以 guest 自测串口日志为准 |
+| GUI | **无**；串口 / `serial.log` 为主 |
+
+```bash
+make && make smoke-net
+# 或交互：
+make run   # 终端即 COM1；看 [net]/[arp]/[icmp]/HelixNetOK
+```
+
+诚实边界：非完整 Linux 网络栈；无 TCP、无 DHCP、无 socket syscall、无 TLS。
 
 ## M6 dynamic link (in-tree, no musl cross required)
 

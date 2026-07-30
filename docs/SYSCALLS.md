@@ -1,6 +1,7 @@
 # Linux Syscall Compatibility
 
-> M5/M6：helixbox + 可选静态 BusyBox；动态 `ld-helix` 演示。完整 Linux ABI **未**宣称。
+> M5/M6：helixbox + 可选静态 BusyBox；动态 `ld-helix` / 真 musl。  
+> M7：内核 ICMP 自测（**无** socket 类 syscall）。完整 Linux ABI **未**宣称。
 
 ## Policy
 
@@ -37,6 +38,12 @@
 | 83 | mkdir | **done** | **`/tmp/...` 与 FAT 根 8.3** |
 | 158 | arch_prctl | **partial** | `ARCH_SET_FS` / `GET_FS`（MSR） |
 | 217 | getdents64 | **done** | FAT 根或 /tmp |
+| 41 | socket | **ENOSYS** | M7 未做；网络仅内核 ARP/ICMP |
+| 49 | bind | **ENOSYS** | |
+| 44 | sendto | **ENOSYS** | |
+| 45 | recvfrom | **ENOSYS** | |
+| 42 | connect | **ENOSYS** | |
+| 43 | accept | **ENOSYS** | |
 
 Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 
@@ -59,3 +66,4 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-07-29 | M6 `HelloDynOK`；BusyBox echo；FAT16 根写 |
 | 2026-07-29 | M6 收尾：mmap 标志文档化；ARCHITECTURE/BUILD 动态路径 |
 | 2026-07-31 | **真 musl** `ld-musl` + PIE hello → **`HelloMuslDynOK`**（`make smoke-musl`） |
+| 2026-07-31 | M7：e1000 + ARP/IPv4/ICMP → **`HelixNetOK`**；socket 仍 ENOSYS |

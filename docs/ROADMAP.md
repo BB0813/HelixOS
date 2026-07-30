@@ -111,11 +111,16 @@ Goal：[`docs/GOAL_M6.md`](GOAL_M6.md) · 完整 musl：[`docs/GOAL_M6_musl.md`]
 
 **验证**：`make smoke-dyn` · `make smoke-musl`。
 
-## M7 — 网络与图形（可后置） `[ ]`
+## M7 — 网络与图形（可后置） `[x]`（网络主路径；图形未做）
 
-- [ ] virtio-net 或等价
-- [ ] 最小 TCP/UDP 或 tap 用户态
-- [ ] framebuffer GUI 可选（不挡 CLI 生态）
+Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
+
+- [x] **e1000**（主验收路径）+ 可选 **virtio-net-pci** 后备；QEMU **user** net（`10.0.2.0/24`）
+- [x] 以太网 + ARP + IPv4；**ICMP echo** 主验收（ping 网关 `10.0.2.2` → **`HelixNetOK`**）
+- [ ] socket syscall / 用户态 applet（本阶段仅内核自测 + 串口日志）
+- [x] `make smoke-net`；framebuffer GUI **未做**（不挡 CLI）
+
+**验证**：`make smoke-net` 串口含 `M7 net ready` · `10.0.2.15` · `ICMP echo reply` · **`HelixNetOK`**。
 
 ---
 

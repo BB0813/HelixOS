@@ -108,8 +108,9 @@ UEFI firmware (OVMF)
 | VFS / FAT | M4 **done (RW 根)** | AHCI + GPT + FAT16 写；盘上 ELF |
 | Linux 兼容子集 | M5 **done** | helixbox + 可选 BusyBox echo；uname=Helix |
 | Linux syscall 表 | M5–M6 | 见 `SYSCALLS.md` |
-| 动态链接 | M6 **done (最小)** | `PT_INTERP` + `ld-helix` + `hello.dyn`；非完整 musl ld.so |
-| 网络 / 图形 | M7 | 可后置 |
+| 动态链接 | M6 **done** | `ld-helix` + **真 musl** `ld-musl`/`hello.musl` |
+| 网络 | M7 **done（最小）** | e1000（主）/ virtio-net（备）；eth+ARP+IPv4+ICMP；无 TCP/socket |
+| 图形 | M7 **未做** | 无 GOP/framebuffer；串口 CLI only |
 
 ## ABI policy
 
@@ -126,14 +127,17 @@ kernel/
   ke/                 early main, shell
   mm/                 pmm, heap, vmm
   arch/x86_64/        paging, gdt, idt, isr, pic, pit, timer, irq, syscall_entry
-  proc/               elf, syscall, task, userland
+  drv/                blk_ahci, e1000, virtio_net
+  net/                nic 选择 + eth/ARP/IPv4/ICMP（最小栈）
+  fs/                 fat, vfs, ramfs
+  proc/               elf, syscall, task, userland, exec
 user/                 freestanding init/task2/helixbox + ld-helix/hello.dyn
 libk/                 serial, kprintf, panic, string
 include/
   efi/                最小 UEFI 类型
-  helix/              公共头
+  helix/              公共头（含 net.h / pci.h）
   generated/          嵌入的 user ELF 头（构建生成）
-third_party/          BusyBox 等（fetch，不默认 vendoring 二进制）
+third_party/          BusyBox / musl-dyn 等（fetch）
 scripts/              mkdisk / run-qemu / elf_set_interp / check-deps
 
 ### M6 dynamic path
