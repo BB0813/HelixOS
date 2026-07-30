@@ -184,13 +184,13 @@ smoke-linux: esp
 		[ "$$ok" = 1 ] && echo "SMOKE-LINUX OK (helixbox)" || { cat $(ROOT)/serial.log; exit 1; }; \
 	fi
 
-smoke-dyn: esp
+smoke-musl: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
 	@HEADLESS=1 TIMEOUT_SECS=60 bash $(ROOT)/scripts/run-qemu.sh || true
-	@ok=1; for pat in "M6 dyn" "PT_INTERP" "HelloDynOK"; do \
-		grep -a -F -q "$$pat" $(ROOT)/serial.log 2>/dev/null || { echo "SMOKE-DYN FAIL $$pat"; ok=0; }; done; \
-	if [ "$$ok" = 1 ]; then echo SMOKE-DYN OK; \
-		grep -a -E '\[dyn\]|\[elf\]|HelloDyn|M6 |PT_INTERP|ld-helix' $(ROOT)/serial.log | head -50; \
+	@ok=1; for pat in "M6 musl" "HelloMuslDynOK" "ld-musl-x86_64.so.1"; do \
+		grep -a -F -q "$$pat" $(ROOT)/serial.log 2>/dev/null || { echo "SMOKE-MUSL FAIL $$pat"; ok=0; }; done; \
+	if [ "$$ok" = 1 ]; then echo SMOKE-MUSL OK; \
+		grep -a -E '\[musl\]|\[elf\]|HelloMuslDynOK|ld-musl|PT_INTERP' $(ROOT)/serial.log | head -40; \
 	else cat $(ROOT)/serial.log; exit 1; fi
 
 fetch-busybox:

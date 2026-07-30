@@ -354,16 +354,42 @@ int elf_load_dynamic(const void *main_img, u64 main_size, struct elf_load_info *
         return -1;
     }
 
-    /* Load main at its linked addresses (bias 0 for our fixed demos). */
+    /* PIE (ET_DYN with low vaddrs) needs a load bias; fixed-addr demos keep 0. */
+    u64 m_bias = 0, i_bias = 0;
+    {
+        u64 mlo = ~0ull, ilo = ~0ull;
+        for (u16 i = 0; i < eh->e_phnum; i++) {
+            const struct elf64_phdr *ph =
+                (const struct elf64_phdr *)((const u8 *)main_img + eh->e_phoff +
+                                           (u64)i * eh->e_phentsize);
+            if (ph->p_type == PT_LOAD && ph->p_memsz && ph->p_vaddr < mlo)
+                mlo = ph->p_vaddr;
+        }
+        for (u16 i = 0; i < ieh->e_phnum; i++) {
+            const struct elf64_phdr *ph =
+                (const struct elf64_phdr *)((const u8 *)interp_img + ieh->e_phoff +
+                                           (u64)i * ieh->e_phentsize);
+            if (ph->p_type == PT_LOAD && ph->p_memsz && ph->p_vaddr < ilo)
+                ilo = ph->p_vaddr;
+        }
+        /* Low-linked PIE → place main at USER_BASE, interp at 0x50000000 */
+        if (mlo < 0x100000ull)
+            m_bias = USER_BASE;
+        if (ilo < 0x100000ull)
+            i_bias = 0x50000000ull;
+        kprintf("[elf] bias main=0x%llx interp=0x%llx (mlo=0x%llx ilo=0x%llx)\n",
+                (unsigned long long)m_bias, (unsigned long long)i_bias,
+                (unsigned long long)mlo, (unsigned long long)ilo);
+    }
+
     u64 mbase, mend, mphdr;
-    if (load_loads(main_img, main_size, eh, 0, &mbase, &mend, &mphdr) != 0) {
+    if (load_loads(main_img, main_size, eh, m_bias, &mbase, &mend, &mphdr) != 0) {
         kfree(interp_img);
         return -1;
     }
 
-    /* Load interpreter at its linked vaddrs (ld-helix uses 0x50000000). */
     u64 ibase, iend, iphdr;
-    if (load_loads(interp_img, interp_sz, ieh, 0, &ibase, &iend, &iphdr) != 0) {
+    if (load_loads(interp_img, interp_sz, ieh, i_bias, &ibase, &iend, &iphdr) != 0) {
         kfree(interp_img);
         return -1;
     }
@@ -371,8 +397,8 @@ int elf_load_dynamic(const void *main_img, u64 main_size, struct elf_load_info *
 
     memset(out, 0, sizeof(*out));
     out->is_dyn = 1;
-    out->entry = ieh->e_entry; /* jump to interp */
-    out->main_entry = eh->e_entry;
+    out->entry = ieh->e_entry + i_bias; /* jump to interp (biased) */
+    out->main_entry = eh->e_entry + m_bias;
     out->interp_base = ibase;
     out->load_base = mbase;
     out->load_end = mend > iend ? mend : iend;

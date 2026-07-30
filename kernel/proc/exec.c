@@ -233,8 +233,8 @@ void dyn_compat_run_smoke(void)
     const char *path = "/bin/hello.dyn";
     struct vfs_file *f = 0;
     if (vfs_open(path, &f) != 0) {
-        kprintf("[dyn] %s missing — skip to M5\n", path);
-        linux_compat_run_smoke();
+        kprintf("[dyn] %s missing — try musl\n", path);
+        musl_compat_run_smoke();
         return;
     }
     vfs_close(f);
@@ -243,17 +243,52 @@ void dyn_compat_run_smoke(void)
     task_init();
     struct task *t = task_exec_path("hello.dyn", path, av);
     if (!t) {
-        kprintf("[dyn] FAIL exec %s — skip to M5\n", path);
-        linux_compat_run_smoke();
+        kprintf("[dyn] FAIL exec %s — try musl\n", path);
+        musl_compat_run_smoke();
         return;
     }
     kprintf("[Helix] M6 dyn ready — entering user\n");
+    task_set_exit_all_hook(musl_compat_run_smoke);
+    task_start_user();
+}
+
+/* Real musl PIE + ld-musl (NAS-built). After HelloDynOK or if dyn skipped. */
+void musl_compat_run_smoke(void)
+{
+    kprintf("[Helix] === M6 musl dyn smoke ===\n");
+    const char *path = "/bin/hello.musl";
+    struct vfs_file *f = 0;
+    if (vfs_open(path, &f) != 0) {
+        kprintf("[musl] %s missing — skip to M5\n", path);
+        linux_compat_run_smoke();
+        return;
+    }
+    vfs_close(f);
+
+    /* Prefer real musl loader on disk */
+    f = 0;
+    if (vfs_open("/lib/ld-musl-x86_64.so.1", &f) != 0) {
+        kprintf("[musl] ld-musl missing — skip to M5\n");
+        linux_compat_run_smoke();
+        return;
+    }
+    vfs_close(f);
+
+    const char *av[] = { "/bin/hello.musl", 0 };
+    task_init();
+    struct task *t = task_exec_path("hello.musl", path, av);
+    if (!t) {
+        kprintf("[musl] FAIL exec %s — skip to M5\n", path);
+        linux_compat_run_smoke();
+        return;
+    }
+    kprintf("[Helix] M6 musl ready — entering user\n");
     task_set_exit_all_hook(linux_compat_run_smoke);
     task_start_user();
 }
 
 void m5_then_m6_smoke(void)
 {
-    /* M6 first (smoke-dyn), then M5 helixbox (smoke-linux). */
+    /* M6 ld-helix → M6 musl → M5 helixbox/BusyBox. */
     dyn_compat_run_smoke();
 }

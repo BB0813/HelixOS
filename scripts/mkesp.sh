@@ -57,6 +57,15 @@ fi
 if [[ -f third_party/busybox/busybox ]]; then
   ADD_ARGS+=(--add "third_party/busybox/busybox:bin/busybox")
 fi
+# musl dynamic (NAS-built; optional)
+if [[ -f third_party/musl-dyn/ld-musl-x86_64.so.1 ]]; then
+  ADD_ARGS+=(--add "third_party/musl-dyn/ld-musl-x86_64.so.1:lib/ld-musl-x86_64.so.1")
+  # musl unifies loader+libc; NEEDED "libc.so" must resolve to same image
+  ADD_ARGS+=(--add "third_party/musl-dyn/ld-musl-x86_64.so.1:lib/libc.so")
+fi
+if [[ -f third_party/musl-dyn/hello.musl ]]; then
+  ADD_ARGS+=(--add "third_party/musl-dyn/hello.musl:bin/hello.musl")
+fi
 
 PY="$(command -v python3 || command -v python || true)"
 if [[ -z "$PY" ]]; then

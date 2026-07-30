@@ -13,4 +13,5 @@ struct task *task_exec_path(const char *name, const char *path,
 /* Run a sequence of single-task programs for smoke-linux; returns when done. */
 void linux_compat_run_smoke(void);
 void dyn_compat_run_smoke(void);
+void musl_compat_run_smoke(void);
 void m5_then_m6_smoke(void);

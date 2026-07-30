@@ -53,3 +53,6 @@ scripts/local.mk
 *.jpg
 *.png
 !esp_assets/**
+
+# Keep musl-dyn binaries (fetched from NAS); ignore empty stubs
+third_party/musl-dyn/*.static.*

@@ -99,16 +99,17 @@ Goal 提示词（历史）：[`docs/GOAL_M5.md`](GOAL_M5.md)
 
 ---
 
-## M6 — 动态链接与 musl `[x]`（最小，非完整 musl ld.so）
+## M6 — 动态链接与 musl `[x]`
 
-Goal（历史）：[`docs/GOAL_M6.md`](GOAL_M6.md)
+Goal：[`docs/GOAL_M6.md`](GOAL_M6.md) · 完整 musl：[`docs/GOAL_M6_musl.md`](GOAL_M6_musl.md)
 
-- [x] 动态 ELF：`PT_INTERP` + 自研 **`ld-helix`** + **`hello.dyn`** + auxv（`AT_BASE`/`AT_ENTRY`/…）
-- [x] `mmap`（匿名 + FIXED/hint）/`munmap`/`mprotect`/`arch_prctl` 等必要项
-- [x] `make smoke-dyn` → **`HelloDynOK`**
-- [x] `SYSCALLS.md` / `ARCHITECTURE` / `BUILD` 同步
+- [x] 最小：`PT_INTERP` + 自研 **`ld-helix`** + **`hello.dyn`** → `HelloDynOK`（`make smoke-dyn`）
+- [x] 完整：**真 `ld-musl-x86_64.so.1`** + PIE **`hello.musl`**（NAS musl-gcc）→ **`HelloMuslDynOK`**（`make smoke-musl`）
+- [x] PIE load bias（main @ `USER_BASE`，interp @ `0x50000000`）
+- [x] `mmap`/`munmap`/`mprotect`/`arch_prctl` 等必要项
+- [x] ESP：`/lib/ld-musl-x86_64.so.1`、`/lib/libc.so`（同镜像）、`/bin/hello.musl`
 
-**验证**：`make smoke-dyn`。完整 musl 动态程序：工具链具备后可替换 ESP 上的 interp。
+**验证**：`make smoke-dyn` · `make smoke-musl`。
 
 ## M7 — 网络与图形（可后置） `[ ]`
 
