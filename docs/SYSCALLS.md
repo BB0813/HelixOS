@@ -48,7 +48,8 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | `/HELIXW.TXT` | 启动自检写入 **`HelixFATWriteOK`** |
 | `/bin/helixbox` | M5 multi-call（MIT） |
 | `/bin/busybox` | 可选静态 BusyBox（GPL，fetch 脚本） |
-| `/bin/hello.dyn` `/lib/ld-helix.so` | M6 动态演示 |
+| `/bin/hello.dyn` `/lib/ld-helix.so` | M6 最小动态（自研 ld-helix） |
+| `/bin/hello.musl` `/lib/ld-musl-x86_64.so.1` `/lib/libc.so` | **真 musl** PIE + loader |
 
 ## Changelog
 
@@ -57,3 +58,4 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-07-28 | M3–M5；ramfs `/tmp` |
 | 2026-07-29 | M6 `HelloDynOK`；BusyBox echo；FAT16 根写 |
 | 2026-07-29 | M6 收尾：mmap 标志文档化；ARCHITECTURE/BUILD 动态路径 |
+| 2026-07-31 | **真 musl** `ld-musl` + PIE hello → **`HelloMuslDynOK`**（`make smoke-musl`） |
