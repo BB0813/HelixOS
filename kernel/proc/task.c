@@ -9,6 +9,7 @@
 #include "helix/cpuio.h"
 #include "helix/vmm.h"
 #include "helix/paging.h"
+#include "helix/signal.h"
 
 extern u64 g_syscall_kstack;
 extern void user_enter_asm(u64 entry, u64 user_rsp);
@@ -79,6 +80,7 @@ struct task *task_create(const char *name, u64 entry, u64 user_sp)
     t->exit_code = 0;
     t->cwd[0] = '/';
     t->cwd[1] = 0;
+    signal_task_init(t);
     if (name) {
         size_t n = strlen(name);
         if (n >= TASK_NAME_MAX)
@@ -134,6 +136,8 @@ void task_exit_current(int code)
     t->exit_code = code;
     t->state = TASK_ZOMBIE;
     kprintf("[task] zombie pid=%d code=%d\n", t->pid, code);
+    /* Notify parent (SIGCHLD) before closing FDs / switching. */
+    signal_on_exit(t);
     /* Free inherited FDs on exit (zombie's fds are not task_current's).
      * Console stdio files (0–2) are static & shared — never free them.
      * But a dup2'd pipe/file on fd 0–2 must be released normally. */
@@ -257,6 +261,9 @@ struct task *task_fork(struct task *parent)
     child->parent = parent;
     child->state = TASK_READY;
     child->exit_code = 0;
+    child->term_sig = 0;
+    child->sig_pending = 0; /* pending is not inherited */
+    /* sig_blocked + sighand already copied via memcpy */
     child->user_page_count = 0; /* will be populated by vmm_copy */
     memset(child->user_pages, 0, sizeof(child->user_pages));
 
@@ -361,6 +368,19 @@ int task_getpid(void)
 {
     struct task *t = task_current();
     return t ? t->pid : 0;
+}
+
+struct task *task_find_by_pid(int pid)
+{
+    if (pid <= 0)
+        return 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        if (g_tasks[i].state == TASK_UNUSED)
+            continue;
+        if (g_tasks[i].pid == pid)
+            return &g_tasks[i];
+    }
+    return 0;
 }
 
 int task_wait(int want, int *out_status, int options)

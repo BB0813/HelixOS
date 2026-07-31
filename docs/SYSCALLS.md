@@ -28,6 +28,8 @@
 | 10 | mprotect | **partial** | 成功 stub（不改页属性） |
 | 11 | munmap | **partial** | 成功 stub（暂泄漏页） |
 | 12 | brk | **done** | 按页扩展 |
+| 13 | rt_sigaction | **done** | SIG_DFL/IGN/handler 存表；用户 handler 帧未做 |
+| 14 | rt_sigprocmask | **done** | block/unblock/set；不可 mask KILL/STOP |
 | 16 | ioctl | **partial** | console stub |
 | 24 | sched_yield | **done** | 协作 |
 | 33 | dup2 | **done** | |
@@ -47,6 +49,7 @@
 | 59 | execve | **done** | VFS 加载 ELF，替换用户空间；argv 支持 |
 | 60 | exit | **done** | 关闭继承 FD（除 console） |
 | 61 | wait4 | **done** | 非阻塞轮询；`(code&0xFF)<<8`；reap zombie |
+| 62 | kill | **done** | 正 pid / 0=self；SIGKILL 不可 mask；投递后 deliver |
 | 63 | uname | **done** | sysname **Helix** |
 | 72 | fcntl | **partial** | stub |
 | 79 | getcwd | **done** | 每任务真实 cwd（默认 `"/"`） |
@@ -75,6 +78,8 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 
 ## Changelog
 
+## Changelog
+
 | 日期 | 变更 |
 |------|------|
 | 2026-07-28 | M3–M5；ramfs `/tmp` |
@@ -87,3 +92,6 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-01 | M10：`fork`/`execve`（独立 PML4 + 页表递归复制）→ **`ForkChildOK`** |
 | 2026-08-01 | M11：`wait4`/`pipe`/`dup2` refcount + syscall 全寄存器切换 → **`PipeOK`**/**`WaitOK`**；**msh** shell → **`HelixMshOK`** |
 | 2026-08-01 | M12：per-task cwd + `chdir`(80) + 路径解析；console stdin poll；msh cd/pwd → **`HelixCwdOK`** |
+| 2026-08-01 | M13：信号最小集（SIGCHLD/SIGINT/kill + HelixSigOK） → **`HelixSigOK`** |
+| 2026-08-01 | 文档对齐 M0–M13（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M14 TCP full stack |
+

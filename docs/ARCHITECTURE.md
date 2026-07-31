@@ -15,9 +15,9 @@
 ```text
 自研 App / 调试工具
         ↓ 自研最小 API（可选，服务调试）
-Linux 用户态（musl, BusyBox, …）
+Linux 用户态（musl, BusyBox, msh, helixbox, …）
         ↓ Linux syscall 兼容层（主路径）
-Helix 内核（调度 · 内存 · VFS · 驱动框架 · IPC）
+Helix 内核（调度 · 内存 · VFS · 驱动 · 网络 · 进程）
         ↓
 x86_64 + UEFI + 硬件
 ```
@@ -25,79 +25,120 @@ x86_64 + UEFI + 硬件
 ### 原则
 
 1. **一套内核语义**，尽量 POSIX 味，方便映射 Linux ABI。
-2. Linux 兼容是 **syscall 号 + 必要的 `/proc` 假节点 + loader 行为**，不是重新实现 Linux。
+2. Linux 兼容是 **syscall 号 + 必要的 loader 行为**，不是重新实现 Linux。
 3. 自研 API 保持极小，默认不与 Linux 抢第一公民地位。
-4. 驱动优先 QEMU 友好：串口、GOP/framebuffer、键盘、virtio-blk/net。
+4. 驱动优先 QEMU 友好：串口、GOP/framebuffer、AHCI、e1000/virtio-net。
 
-## Boot path (M0 → M4, current)
+## Boot path (M0 → M13)
 
 ```text
 UEFI firmware (OVMF)
     → GPT disk / ESP FAT / BOOTX64.EFI
-         boot → ExitBootServices → kernel_early_main
+         boot → (optional GOP) → ExitBootServices → kernel_early_main
          M1: pmm / identity / gdt / idt / heap
-         M2: PIC+PIT / shell
-         M4: AHCI blk_read → GPT → FAT mount → VFS /
-         M3/M4 userland:
-           · read /hello.txt (smoke)
-           · load /bin/init.elf + /bin/task2.elf (disk; embed fallback)
-           · Ring3 cooperative tasks → idle shell
-         M5/M8/M10 linux-compat:
-           · helixbox / BusyBox / musl 程序（disk, FAT rw）
-           · UDP socket + fork/exec
+         M2: PIC+PIT / kernel shell
+         M9: fb_init → test pattern（无 GOP 则 headless）
+         M4: AHCI → GPT → FAT16 RW 挂载 → VFS /
+         M7: e1000 + ARP/IPv4/ICMP 自测 → HelixNetOK
+         用户态链式 smoke（exit-all hook）：
+           M6  ld-helix hello.dyn → musl hello.musl
+           M5  BusyBox echo 和/或 helixbox smoke
+                 · UDP 回环 user_udp_ok
+                 · fork/exec ForkChildOK
+                 · pipe/wait PipeOK WaitOK
+                 · cwd/chdir HelixCwdOK
+                 · signals HelixSigOK（kill SIGTERM）
+           M11 msh -c "echo HelixMshOK | cat"
+         全退出后 → 内核 idle / shell
 ```
 
-**内核仍是单一 EFI 映像**；测试 ELF 同时 **嵌入**（fallback）与 **写入 ESP**（主路径）。
+**内核仍是单一 EFI 映像**；早期测试 ELF 可嵌入（fallback），主路径从 ESP 加载。
 
 ### M4 storage
 
 | 项 | 选择 |
 |----|------|
-| 块设备 | PCI class 01:06 AHCI，port0，同步 READ DMA EXT |
+| 块设备 | PCI class 01:06 AHCI，port0，同步 READ/WRITE DMA EXT |
 | MMIO | `paging_map_mmio`（ABAR 常在 identity 外） |
 | 分区 | GPT，ESP type GUID |
-| FS | `/` → FAT16 **只读**；`/tmp` → **ramfs 可写** |
-| VFS | 路径分流：`/tmp…`→ramfs，其余→FAT |
-| FD | 每任务 16 槽；0/1/2 = 串口 console |
-| 写 | ramfs 上 mkdir/create/write；ESP 仍只读 |
+| FS | `/` → **FAT16 可写**（根目录 create/write/mkdir；写回 ESP 镜像）；`/tmp` → **ramfs 可写** |
+| VFS | 路径分流：`/tmp…`→ramfs，其余→FAT；相对路径经 per-task cwd 解析（M12） |
+| FD | 每任务 16 槽；0/1/2 = 串口 console（静态，不 free）；`refcount` + `fd_hold`（M11） |
+| 限制 | FAT32 写路径未做；FAT 写主要覆盖根 8.3 |
 
-### M3 user model
+### M3 / M10–M12 process model
 
 | 项 | 选择 |
 |----|------|
-| 地址空间 | **每任务独立 CR3**（M10 fork 后）：kernel 映射共享，用户页独立物理复制；M3 早期为共享 CR3 |
-| 进入用户 | `iretq`；syscall/`sysretq` |
-| 调度 | 协作 yield/exit |
-| 输出 | `write` → console → `[user] ` + 串口 |
-| 进程 | `fork`(57) 独立 PML4 + 页表递归复制；`execve`(59) 替换用户空间 |
+| 地址空间 | **每任务独立 CR3/PML4**（M10）：kernel 映射共享，用户页独立物理复制 |
+| 进入用户 | `iretq`；`syscall` / `sysretq` |
+| 调度 | **协作** yield/exit；syscall 内 `task_yield` **不会**真正切换（仅在 syscall 返回路径切换） |
+| 阻塞 I/O | 必须 **EAGAIN** + 用户态 `yield` 轮询（pipe / wait4 / console stdin） |
+| 输出 | `write` → console 行缓冲 → `[user] ` + 串口 |
+| 进程 | `fork`(57) 独立 PML4 + 页表递归复制；`execve`(59) 替换用户空间 + argv |
+| 生命周期 | `wait4`(61) 非阻塞 + zombie reap；`pipe`(22)；`dup2`(33)；exit 关继承 FD |
+| cwd | per-task `cwd[256]`；`getcwd`/`chdir`；`vfs_path_resolve` 归一化 |
 
 ### M1 memory notes
 
-- `phys_ceiling` 只统计 RAM-like 类型，**不含** MMIO/Reserved（避免 QEMU 把 ceiling 拉到 TiB 级）。
-- PMM 只把 `EfiConventionalMemory` 标为空闲；Loader/BootServices 区域暂不回收（映像、boot_info、旧栈仍可能在其中）。
-- Identity map：`[0, phys_ceiling)` 2MiB pages；镜像与栈均在该范围内。
+- `phys_ceiling` 只统计 RAM-like 类型，**不含** MMIO/Reserved。
+- PMM 只把 `EfiConventionalMemory` 标为空闲。
+- Identity map：`[0, phys_ceiling)` 2MiB pages。
 
 ### M2 interrupts & shell
 
 | 项 | 实现 |
 |----|------|
-| PIC | 8259 重映射 master=`0x20` slave=`0x28`；默认全屏蔽，按需 unmask |
-| 时钟 | PIT ch0 mode3 ≈100Hz → IRQ0；`timer_on_irq` 只加计数/置位 |
+| PIC | 8259 重映射 master=`0x20` slave=`0x28` |
+| 时钟 | PIT ch0 mode3 ≈100Hz → IRQ0 |
 | 心跳 | 主循环 `timer_poll_heartbeat` 打印 `[tick] N`（**不在 IRQ 里 kprintf**） |
-| IDT | gates 0..47；0..31 异常 → panic；32..47 → `irq_handle` + EOI + `iretq` |
-| 输入 | COM1 轮询 RX（非 IRQ）；行缓冲 + 回显 + 退格 |
-| Shell | 提示符 `helix>`；命令见下表 |
+| IDT | 0..31 异常 → panic；32..47 → `irq_handle` + EOI |
+| 输入 | COM1 轮询 RX；内核 shell 行编辑；用户态 console stdin 同口（EAGAIN） |
+| Shell | 提示符 `helix>`：`help` / `mem` / `page` / `int` / `uptime` / `halt` 等 |
 
-**Shell 命令**
+### M6 dynamic path
 
-| 命令 | 输出 |
-|------|------|
-| `help` / `?` | 命令列表 |
-| `mem` | PMM total/free/ceiling、boot conventional 概要 |
-| `page` | identity map 上界、PMM/boot ceiling |
-| `int` | timer ticks/hz + 非零 IRQ 计数 |
-| `uptime` | ticks 与约略秒数 |
-| `halt` | `cli; hlt` 死循环 |
+```text
+exec /bin/hello.dyn
+  → elf_load_dynamic: PT_INTERP=/lib/ld-helix.so
+  → map main PT_LOAD + interp PT_LOAD
+  → user stack: argc/argv/env/aux (AT_ENTRY=main, AT_BASE=interp, …)
+  → enter Ring3 at interp entry (0x50000000)
+  → ld-helix jmp main → write("HelloDynOK\n"); exit
+
+exec /bin/hello.musl
+  → PT_INTERP=/lib/ld-musl-x86_64.so.1 + /lib/libc.so
+  → PIE bias；HelloMuslDynOK
+```
+
+### M13–M14 networking
+
+- **M13**：UDP 已做（socket/bind/sendto/recvfrom）；TCP stub（connect/accept/listen/sendmsg/recvmsg/setsockopt/getsockopt → ENOSYS）
+- **M14**：full TCP（AF_INET/SOCK_STREAM） + state machine + `connect`/`accept`/`listen`/`sendmsg`/`recvmsg`
+- 验收：`make smoke-linux` 含 TCP OK；UDP 仍正常（local loopback）
+
+**协作调度下**：TCP 阻塞操作用 EAGAIN + 用户态 yield（与 pipe/wait4 一致）。
+
+
+### M9 graphics
+
+| 项 | 实现 |
+|----|------|
+| 固件 | ExitBootServices 前 `LocateProtocol(GOP)`；选 ≥640 宽模式 |
+| 驱动 | `fb_init` / `fb_cls` / `fb_pixel` / `fb_rect` / `fb_puts`；8×16 字体 |
+| 验收 | `fb_smoke_done`；OVMF 4MB 常无 QemuVideoDxe → headless fallback OK |
+
+### M13 signals
+
+- **数据结构**：per-task `pending` 位图、`blocked` 位图、`sighand` 表（default/ignore/terminate）
+- **syscall**：`kill`(62)、`rt_sigaction`(13)、`rt_sigprocmask`(14)
+- **投递**：`signal_send` / `signal_deliver_current`（syscall 返回前检查）
+- **SIGCHLD**：子 exit 时 `signal_on_exit` → 父 pending（default ignore）
+- **SIGINT**：COM1 Ctrl+C → `signal_send` 前台 task（msh 兼容）
+- **验收**：helixbox `HelixSigOK`（kill + SIGTERM）、msh 不崩溃
+
+**协作调度下**：信号仅置位，不抢占；处理在 syscall 返回路径。SIGKILL 不可屏蔽，直接 terminate。
+
 
 ## Subsystems (target shape)
 
@@ -110,53 +151,43 @@ UEFI firmware (OVMF)
 | 内核 shell | M2 **done** | COM1；help/mem/page/int/… |
 | 用户态 / syscall | M3 **done** | Ring3 + write/yield/exit + 协作 |
 | VFS / FAT | M4 **done (RW 根)** | AHCI + GPT + FAT16 写；盘上 ELF |
-| Linux 兼容子集 | M5 **done** | helixbox + 可选 BusyBox echo；uname=Helix |
-| Linux syscall 表 | M5–M6 | 见 `SYSCALLS.md` |
-| 动态链接 | M6 **done** | `ld-helix` + **真 musl** `ld-musl`/`hello.musl` |
-| 网络 | M7-M8 **done（最小）** | e1000 + ARP/IPv4/ICMP + UDP socket；TCP stub ENOSYS |
-| 图形 | M9 **done** | GOP framebuffer + 8x16 字体；OVMF 缺驱动时 headless fallback |
-| 进程 | M10 **done** | `fork`(57) 独立 PML4 + `execve`(59) ELF 替换 |
+| Linux 兼容子集 | M5 **done** | helixbox + 可选 BusyBox；uname=Helix |
+| 动态链接 | M6 **done** | ld-helix + 真 musl |
+| 网络 | M7–M8 **done（最小）** | e1000 + ICMP + UDP；TCP ENOSYS |
+| 图形 | M9 **done** | GOP fb + headless fallback |
+| 进程创建 M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
+| 信号 | **M13 候选** | SIGCHLD/SIGINT 等 |
+| TCP 全栈 | 后置 | 状态机 |
 
 ## ABI policy
 
-- **文件格式**：ELF（用户态）；引导阶段产物为 PE/COFF EFI。
-- **系统调用**：以 x86_64 Linux syscall 编号为主表；偏差必须记入 `SYSCALLS.md`。
-- **`uname` / os-release**：默认报告 Helix；若为兼容需要伪装 Linux，必须在文档标明“兼容用途”。
+- **文件格式**：ELF（用户态）；引导产物为 PE/COFF EFI。
+- **系统调用**：x86_64 Linux 号为主表；偏差记入 `SYSCALLS.md`。
+- **`uname`**：默认 **Helix**（诚实）。
 - **Windows / Win32**：非目标。
 
 ## Source layout
 
 ```text
-boot/                 UEFI 入口与 handoff（efi_main）
+boot/                 UEFI 入口与 handoff（efi_main，GOP）
 kernel/
   ke/                 early main, shell
   mm/                 pmm, heap, vmm
   arch/x86_64/        paging, gdt, idt, isr, pic, pit, timer, irq, syscall_entry
   drv/                blk_ahci, e1000, virtio_net, fb
-  net/                nic 选择 + eth/ARP/IPv4/ICMP + UDP（最小栈）
-  fs/                 fat, vfs, ramfs
-  proc/               elf, syscall, task, userland, exec
-user/                 freestanding init/task2/helixbox + ld-helix/hello.dyn
+  net/                nic + eth/ARP/IPv4/ICMP + UDP
+  fs/                 fat, vfs, ramfs, pipe
+  proc/               elf, syscall, task, userland, exec, signal
+user/                 init/task2/helixbox/ld-helix/hello.dyn/msh
 libk/                 serial, kprintf, panic, string
 include/
   efi/                最小 UEFI 类型
-  helix/              公共头（含 net.h / pci.h）
-  generated/          嵌入的 user ELF 头（构建生成）
+  helix/              公共头
+  generated/          嵌入 user ELF 头（构建生成）
+img/                  Logo PNG
 third_party/          BusyBox / musl-dyn 等（fetch）
 scripts/              mkdisk / run-qemu / elf_set_interp / check-deps
-
-### M6 dynamic path
-
-```text
-exec /bin/hello.dyn
-  → elf_load_dynamic: PT_INTERP=/lib/ld-helix.so
-  → map main PT_LOAD + interp PT_LOAD
-  → user stack: argc/argv/env/aux (AT_ENTRY=main, AT_BASE=interp, AT_PHDR…)
-  → enter Ring3 at interp entry (0x50000000)
-  → ld-helix reads AT_ENTRY and jmp main
-  → main write("HelloDynOK\n"); exit
-```
-docs/
+docs/                 ARCHITECTURE / BUILD / ROADMAP / SYSCALLS / GOAL_*
 ```
 
 ## Non-goals (reminder)

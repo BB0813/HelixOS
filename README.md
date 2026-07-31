@@ -1,5 +1,9 @@
 # HelixOS
 
+<p align="center">
+  <img src="img/Helix无背景Logo.png" alt="HelixOS" width="160"/>
+</p>
+
 **本项目为“中国第六 世界第七”自研OS 借鉴于人朝的小郭同学（XJ380OS）**
 
 **该技术路线与XJ380OS的技术路线有高相似度 变相证明XJ380OS的路线没问题 但他们确实在宣发方面出现了严重失误 以导致出现了这种巨大的公关问题**
@@ -12,35 +16,29 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | 层 | 说明 |
 |----|------|
 | 自研 App / 调试工具 | 可选极小自研 API |
-| Linux 用户态 | musl、BusyBox 等（第三方，原许可） |
+| Linux 用户态 | musl、BusyBox、msh 等（第三方原许可 / 自研 MIT） |
 | Linux syscall 兼容层 | 主路径，文档见 `docs/SYSCALLS.md` |
-| **Helix 内核** | 调度 · 内存 · VFS · 驱动 · IPC |
+| **Helix 内核** | 调度 · 内存 · VFS · 驱动 · 网络 · 进程 |
 | 硬件 | x86_64 + UEFI |
 
 > 诚实边界：我们写的是自研内核 + Linux 兼容层；不是“又一个 Linux”。第三方用户态（BusyBox 等）单独标注许可与来源。
 
 ## 当前状态
 
-**M0–M8 最小闭环**（2026-07-31）
+**M0–M12 已完成**（2026-08-01）
 
-- M0–M3：UEFI、早期核、shell、Ring3 协作
-- M4：**FAT16 可写**（AHCI 持久化）+ VFS + `/tmp` ramfs
-- M5：Linux 号 syscall、`helixbox`、可选 **BusyBox** `echo`
-- M6：`ld-helix` + **真 musl** → `HelloDynOK` / `HelloMuslDynOK`
-- M7：**e1000** + eth/ARP/IPv4/**ICMP** → **`HelixNetOK`**（无 socket、无 GUI）
-- M8：**UDP socket**（`socket`/`bind`/`sendto`/`recvfrom`）→ **`user_udp_ok`**（helixbox 自检）
-- 验证：`make smoke-fs` · `make smoke-musl` · `make smoke-linux` · **`make smoke-net`**
-
-## 快速开始
-
-```bash
-make && make smoke-fs      # 含盘上写回自检
-make smoke-musl            # 真 musl 动态
-make smoke-linux           # BusyBox 或 helixbox
-make smoke-net             # ICMP 自测 HelixNetOK
-```
-
-串口关键标记：`HelixFATWriteOK` · `HelloMuslDynOK` · `HelixBusyBoxOK` · **`HelixNetOK`** · **`user_udp_ok`**
+| 阶段 | 内容 | 关键标记 |
+|------|------|----------|
+| M0–M3 | UEFI、早期核、shell、Ring3 协作 | `M3 userland OK` |
+| M4 | **FAT16 可写**（AHCI 持久化）+ VFS + `/tmp` ramfs | `HelixFATWriteOK` |
+| M5 | Linux 号 syscall、`helixbox`、可选 BusyBox | `HelixBusyBoxOK` / `helixbox_smoke_done` |
+| M6 | `ld-helix` + **真 musl** | `HelloDynOK` / `HelloMuslDynOK` |
+| M7 | e1000 + eth/ARP/IPv4/**ICMP** | **`HelixNetOK`** |
+| M8 | **UDP socket** + TCP ENOSYS stubs | **`user_udp_ok`** |
+| M9 | GOP 帧缓冲（OVMF 无驱动则 headless） | `fb_smoke_done` |
+| M10 | `fork` / `execve`（独立 PML4） | `ForkChildOK` |
+| M11 | `wait4` / `pipe` / FD refcount / **msh** | `PipeOK` · `HelixMshOK` |
+| M12 | per-task **cwd** / `chdir` / 路径解析 / console stdin | **`HelixCwdOK`** |
 
 ## 快速开始
 
@@ -49,49 +47,39 @@ make smoke-net             # ICMP 自测 HelixNetOK
 | 工具 | 用途 | 推荐安装 |
 |------|------|----------|
 | Clang + LLD | 编译/链接 freestanding PE EFI | MSYS2: `mingw-w64-x86_64-clang` `mingw-w64-x86_64-lld` |
-| Make | 构建 | MSYS2: `mingw-w64-x86_64-make` 或系统 make |
-| QEMU | 仿真 | MSYS2: `mingw-w64-x86_64-qemu` 或官方 QEMU |
+| Make | 构建 | MSYS2 make 或系统 make |
+| QEMU | 仿真 | MSYS2 qemu 或官方 QEMU |
 | OVMF | UEFI 固件 | 随 QEMU 包或单独下载（见 `docs/BUILD.md`） |
-| NASM | 后期 asm（M0 可选） | `mingw-w64-x86_64-nasm` |
 
-MSYS2 MinGW64 一键示例：
+MSYS2 MinGW64：
 
 ```bash
 pacman -S --needed mingw-w64-x86_64-clang mingw-w64-x86_64-lld \
   mingw-w64-x86_64-make mingw-w64-x86_64-qemu mingw-w64-x86_64-nasm
+export PATH="/c/msys64/mingw64/bin:/c/msys64/usr/bin:$PATH"
 ```
-
-Linux / WSL2：
-
-```bash
-# Debian/Ubuntu 示例
-sudo apt install clang lld make qemu-system-x86 ovmf nasm
-```
-
-检查依赖：
 
 ```bash
 make check-deps
-# 或
-./scripts/check-deps.sh
+make && make smoke-linux   # fork/pipe/msh/cwd
+make smoke-fs              # FAT 写回
+make smoke-net             # ICMP + UDP
+make smoke-musl            # 真 musl 动态
+make smoke-fb              # 帧缓冲（无 GOP 则 headless OK）
 ```
 
-### 构建与运行
-
-```bash
-make && make smoke-linux   # M5 applets
-make smoke-fs              # 盘 FS
-make smoke-user            # Ring3 协作
-```
-
-串口可见：
+串口关键标记示例：
 
 ```text
-[user] HelixLinuxOK
-[user] HelixFS OK
-[user] Helix
-[user] sh_ok
-[user] helixbox_smoke_done
+HelixFATWriteOK
+HelloMuslDynOK
+HelixNetOK
+user_udp_ok
+ForkChildOK  ForkParentOK
+PipeOK  WaitOK
+HelixMshOK
+HelixCwdOK
+helixbox_smoke_done
 ```
 
 详细步骤与排错见 [`docs/BUILD.md`](docs/BUILD.md)。
@@ -100,19 +88,27 @@ make smoke-user            # Ring3 协作
 
 ```text
 HelixOS/
-├── boot/           # UEFI handoff
-├── kernel/         # ke / mm / arch / drv(ahci) / fs(fat,vfs) / proc
-├── libk/
-├── user/           # freestanding init/task2
-├── esp_assets/     # hello.txt 等写入 ESP 的测资
+├── boot/           # UEFI handoff（GOP → boot_info）
+├── kernel/
+│   ├── ke/         # early main, shell
+│   ├── mm/         # pmm, heap, vmm
+│   ├── arch/x86_64/# paging, gdt, idt, pic, pit, syscall_entry
+│   ├── drv/        # ahci, e1000, virtio_net, fb
+│   ├── net/        # eth/ARP/IPv4/ICMP/UDP
+│   ├── fs/         # fat, vfs, ramfs, pipe
+│   └── proc/       # elf, syscall, task, exec, userland
+├── libk/           # serial, kprintf, panic, string
+├── user/           # init, task2, helixbox, ld-helix, hello.dyn, msh
+├── img/            # Logo（深色 / 浅色 / 无背景）
+├── esp_assets/     # 写入 ESP 的测资
 ├── scripts/        # mkdisk / mkesp / run-qemu / smoke-*
-├── docs/
+├── docs/           # ARCHITECTURE / BUILD / ROADMAP / SYSCALLS / GOAL_*
 └── Makefile
 ```
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → M1 → … → M5（Linux 兼容子集兑现）。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M12**（已完成）；下一候选 **M13 signals**。
 
 ## 许可
 
@@ -121,7 +117,18 @@ HelixOS/
 
 ## 文档
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 分层与原则
-- [`docs/BUILD.md`](docs/BUILD.md) — 工具链与构建
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — 里程碑
-- [`docs/SYSCALLS.md`](docs/SYSCALLS.md) — Linux 兼容 syscall 表（M5 起填充）
+| 文档 | 内容 |
+|------|------|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 分层、启动路径、子系统 |
+| [`docs/BUILD.md`](docs/BUILD.md) | 工具链、QEMU、smoke 目标 |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 里程碑勾选与验收 |
+| [`docs/SYSCALLS.md`](docs/SYSCALLS.md) | Linux 兼容 syscall 表 |
+| `docs/GOAL_M*.md` | 各阶段历史 goal 提示词 |
+
+## Logo
+
+| 文件 | 用途 |
+|------|------|
+| [`img/Helix无背景Logo.png`](img/Helix无背景Logo.png) | README / 透明底 |
+| [`img/Helix深色Logo.png`](img/Helix深色Logo.png) | 浅色背景 |
+| [`img/Helix浅色Logo.png`](img/Helix浅色Logo.png) | 深色背景 |

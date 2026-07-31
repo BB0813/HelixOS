@@ -14,6 +14,7 @@
 #include "helix/paging.h"
 #include "helix/net.h"
 #include "helix/pipe.h"
+#include "helix/signal.h"
 
 u64 g_syscall_kstack;
 u64 g_syscall_user_rsp;
@@ -452,13 +453,86 @@ static i64 sys_mprotect(u64 addr, u64 len, u64 prot)
     return 0;
 }
 
-static i64 sys_rt_sigaction(void)
+/* Linux struct sigaction layout we accept (simplified):
+ *   u64 sa_handler; u64 sa_flags; u64 sa_restorer; u64 sa_mask; (+pad ok) */
+static i64 sys_rt_sigaction(u64 signum, u64 act, u64 oldact, u64 sigsetsize)
 {
-    return 0; /* ignore handlers */
+    (void)sigsetsize;
+    int sig = (int)signum;
+    if (sig < 1 || sig >= HELIX_NSIG || sig == SIGKILL || sig == SIGSTOP)
+        return ERR(EINVAL);
+    struct task *t = task_current();
+    if (!t)
+        return ERR(EINVAL);
+
+    if (oldact) {
+        if (!user_ptr_ok((void *)(uintptr_t)oldact, sizeof(struct helix_sigaction)))
+            return ERR(EFAULT);
+        memcpy((void *)(uintptr_t)oldact, &t->sighand[sig], sizeof(struct helix_sigaction));
+    }
+    if (act) {
+        if (!user_ptr_ok((const void *)(uintptr_t)act, sizeof(struct helix_sigaction)))
+            return ERR(EFAULT);
+        memcpy(&t->sighand[sig], (const void *)(uintptr_t)act, sizeof(struct helix_sigaction));
+    }
+    return 0;
 }
 
-static i64 sys_rt_sigprocmask(void)
+/* how: SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2 */
+static i64 sys_rt_sigprocmask(u64 how, u64 set, u64 oldset, u64 sigsetsize)
 {
+    (void)sigsetsize;
+    struct task *t = task_current();
+    if (!t)
+        return ERR(EINVAL);
+    if (oldset) {
+        if (!user_ptr_ok((void *)(uintptr_t)oldset, 8))
+            return ERR(EFAULT);
+        *(u64 *)(uintptr_t)oldset = t->sig_blocked;
+    }
+    if (set) {
+        if (!user_ptr_ok((const void *)(uintptr_t)set, 8))
+            return ERR(EFAULT);
+        u64 news = *(const u64 *)(uintptr_t)set;
+        /* Cannot block SIGKILL/SIGSTOP */
+        news &= ~((1ull << SIGKILL) | (1ull << SIGSTOP));
+        if (how == 0)      /* SIG_BLOCK */
+            t->sig_blocked |= news;
+        else if (how == 1) /* SIG_UNBLOCK */
+            t->sig_blocked &= ~news;
+        else if (how == 2) /* SIG_SETMASK */
+            t->sig_blocked = news;
+        else
+            return ERR(EINVAL);
+    }
+    return 0;
+}
+
+static i64 sys_kill(u64 pid, u64 sig)
+{
+    int s = (int)sig;
+    int p = (int)pid;
+    if (s < 0 || s >= HELIX_NSIG)
+        return ERR(EINVAL);
+    /* M13: only positive pid (or 0 = self). No process-group broadcast. */
+    if (p < 0)
+        return ERR(EINVAL);
+    if (p == 0) {
+        struct task *cur = task_current();
+        if (!cur)
+            return ERR(ESRCH);
+        p = cur->pid;
+    }
+    if (s == 0)
+        return task_find_by_pid(p) ? 0 : ERR(ESRCH);
+
+    struct task *target = task_find_by_pid(p);
+    if (!target || target->state == TASK_ZOMBIE)
+        return ERR(ESRCH);
+    signal_send(target, s);
+    /* Killing self: deliver now so we exit before returning to user. */
+    if (target == task_current())
+        signal_deliver_current();
     return 0;
 }
 
@@ -914,8 +988,9 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case SYS_mmap:        ret = sys_mmap(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
     case SYS_mprotect:    ret = sys_mprotect(f->a0, f->a1, f->a2); break;
     case SYS_munmap:      ret = sys_munmap(f->a0, f->a1); break;
-    case SYS_rt_sigaction: ret = sys_rt_sigaction(); break;
-    case SYS_rt_sigprocmask: ret = sys_rt_sigprocmask(); break;
+    case SYS_rt_sigaction: ret = sys_rt_sigaction(f->a0, f->a1, f->a2, f->a3); break;
+    case SYS_rt_sigprocmask: ret = sys_rt_sigprocmask(f->a0, f->a1, f->a2, f->a3); break;
+    case SYS_kill:        ret = sys_kill(f->a0, f->a1); break;
     case SYS_arch_prctl:   ret = sys_arch_prctl(f->a0, f->a1); break;
     case SYS_set_tid_address: ret = sys_set_tid_address(f->a0); break;
     case SYS_clock_gettime: ret = sys_clock_gettime(f->a0, f->a1); break;
@@ -949,6 +1024,9 @@ u64 syscall_entry_c(struct syscall_frame *f)
 
     if (t && task_current() == t)
         t->regs.rax = (u64)ret;
+
+    /* Deliver pending signals before returning to userspace. */
+    signal_deliver_current();
 
     t = task_current();
     if (t && t->state == TASK_RUNNING) {

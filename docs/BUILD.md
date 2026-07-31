@@ -7,16 +7,17 @@
 | `make` / `make all` | 编译链接 → `out/BOOTX64.EFI` |
 | `make esp` | 组装最小 ESP 目录树到 `esp/` |
 | `make run` | QEMU + OVMF 启动，串口接到终端并写 `serial.log`（可交互 shell） |
-| `make smoke` | 无头启动；要求 M0+M1+M2 标记（含 `M2 shell ready` 与 `[tick]`） |
-| `make smoke-shell` | TCP 串口喂 `help/mem/page/int/uptime`，grep 命令输出 |
-| `make smoke-user` | 无头启动；要求 Ring3 `write` / `yield` / `exit` / `M3 userland OK` |
-| `make smoke-fs` | AHCI+FAT；`HelixFS OK` + **`HelixFATWriteOK`**（盘上写回） |
-| `make smoke-linux` | BusyBox `echo` 和/或 helixbox smoke |
-| `make smoke-dyn` | **M6**：`PT_INTERP` + `ld-helix` → **`HelloDynOK`**（若 Makefile 有该目标） |
-| `make smoke-musl` | **M6**：真 musl → **`HelloMuslDynOK`** |
-| `make smoke-net` | **M7**：e1000 + ARP/ICMP → **`HelixNetOK`** |
+| `make smoke` | 无头；M0+M1+M2（`M2 shell ready` · `[tick]`） |
+| `make smoke-shell` | TCP 串口喂 `help/mem/page/int/uptime` |
+| `make smoke-user` | Ring3 `write`/`yield`/`exit` · `M3 userland OK` |
+| `make smoke-fs` | AHCI+FAT；`HelixFS OK` + **`HelixFATWriteOK`** |
+| `make smoke-linux` | BusyBox/helixbox + **fork/pipe/msh/cwd**（M5–M12 链） |
+| `make smoke-dyn` | M6：`ld-helix` → **`HelloDynOK`** |
+| `make smoke-musl` | M6：真 musl → **`HelloMuslDynOK`** |
+| `make smoke-net` | M7–M8：ICMP **`HelixNetOK`** + UDP **`user_udp_ok`** |
+| `make smoke-fb` | M9：`fb_smoke_done` 或 headless fallback |
 | `make smoke-panic` | `-DHELIX_M1_TEST_PF`，断言 `#PF` panic |
-| `make user` | user ELF + `ld-helix.so` + `hello.dyn` + generated headers |
+| `make user` | user ELF + ld-helix + hello.dyn + **msh** + generated headers |
 | `make fetch-busybox` | 下载可选静态 BusyBox 到 `third_party/busybox/` |
 
 ## Toolchain
@@ -100,7 +101,8 @@ make && make smoke-net
 make run   # 终端即 COM1；看 [net]/[arp]/[icmp]/HelixNetOK
 ```
 
-诚实边界：非完整 Linux 网络栈；无 TCP、无 DHCP、无 socket syscall、无 TLS。
+诚实边界：非完整 Linux 网络栈；**有 UDP socket**（M8）；TCP 仍 ENOSYS；无 DHCP/TLS。  
+host↔guest UDP：MSYS2 QEMU 对已占用端口的 `hostfwd=udp` 常失败；`host_udp_timeout` 为预期，主验收为 guest 内 **`user_udp_ok`**。
 
 ## M6 dynamic link (in-tree, no musl cross required)
 
@@ -154,12 +156,14 @@ helix> …
 | `smoke-shell` | `scripts/smoke-shell.sh`：QEMU 串口挂 **TCP** `127.0.0.1:4659`（`server=on,wait=off`），等 shell ready 后用 Python socket 发送 `help\r mem\r …` | 输出含 `Helix kernel shell`、`PMM: total_pages`、`Paging: identity map`、`timer: ticks=`、`uptime:` |
 | `smoke-user` | 同 smoke，超时略长 | 另需 `Hello from Ring3`、`init: online`、`task2: hi`、`yield 1 -> 2`、`M3 userland OK` |
 | `smoke-fs` | 同左 | `M4 fs ready`、`HelixFS OK`、`loaded init+task2 from disk`、用户输出 |
-| `smoke-linux` | 同左，超时更长 | `HelixLinuxOK`、`HelixFS OK`、uname 行 `Helix`、`sh_ok`、`helixbox_smoke_done` |
+| `smoke-linux` | 超时更长 | BusyBox/helixbox + `ForkChildOK` · `PipeOK` · `WaitOK` · `HelixMshOK` · **`HelixCwdOK`** · `helixbox_smoke_done` |
+| `smoke-net` | 见上 | `M7 net ready` · `HelixNetOK` · `user_udp_ok` |
+| `smoke-fb` | `HEADLESS=0` 亦可 | `fb_smoke_done` 或 `M9 no framebuffer` |
 | `smoke-panic` | `-DHELIX_M1_TEST_PF` 重建 | `HELIX PANIC` + `#PF` |
 
-### ESP 测资（M4）
+### ESP 测资（M4+）
 
-`make esp` → `scripts/mkesp.sh` 调用 `mkdisk.py`，除 `BOOTX64.EFI` 外可选加入：
+`make esp` → `scripts/mkesp.sh` 调用 `mkdisk.py`，除 `BOOTX64.EFI` 外加入：
 
 | 主机路径 | ESP 路径 |
 |----------|----------|
@@ -167,14 +171,18 @@ helix> …
 | `build/user/init.elf` | `/bin/init.elf` |
 | `build/user/task2.elf` | `/bin/task2.elf` |
 | `build/user/helixbox.elf` | `/bin/helixbox` |
+| `build/user/msh.elf` | `/bin/msh` |
+| `build/user/ld-helix.so` / `hello.dyn` | `/lib/ld-helix.so` · `/bin/hello.dyn` |
+| musl 产物（若有） | `/lib/ld-musl-…` · `/lib/libc.so` · `/bin/hello.musl` |
+| 可选 BusyBox | `/bin/busybox` |
 
-**M4 文件系统只读**（无写回 FAT）。**M5** 用户程序为自研 **helixbox**（MIT multi-call，Linux syscall ABI）。真实 BusyBox 静态构建见 `third_party/README.md`。
+**FAT16 根可写**（AHCI 写回 → `HelixFATWriteOK`）。**M5** 用户程序为自研 **helixbox**（MIT multi-call）。真实 BusyBox 见 `third_party/README.md`。
 
 ### 用户程序构建
 
 ```bash
 make user
-# → build/user/init.elf, task2.elf, helixbox.elf
+# → build/user/init.elf, task2.elf, helixbox.elf, msh.elf, ld-helix, hello.dyn
 # → include/generated/user_*_elf.h
 ```
 

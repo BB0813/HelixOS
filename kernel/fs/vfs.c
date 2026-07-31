@@ -5,6 +5,7 @@
 #include "helix/kprintf.h"
 #include "helix/string.h"
 #include "helix/heap.h"
+#include "helix/signal.h"
 
 static const struct vfs_ops *g_root_ops;
 static const struct vfs_ops *g_tmp_ops;
@@ -31,6 +32,14 @@ static int cons_read(struct vfs_file *f, void *buf, u64 len, u64 *out_n)
     if (!serial_poll_char(&c)) {
         *out_n = 0;
         return -11; /* EAGAIN */
+    }
+    /* Ctrl+C → SIGINT to current task (do not return the byte). */
+    if (c == 3) {
+        struct task *t = task_current();
+        if (t)
+            signal_send(t, SIGINT);
+        *out_n = 0;
+        return -11; /* EAGAIN; delivery on next syscall return */
     }
     /* Map CR → LF so readline works over serial */
     if (c == '\r')

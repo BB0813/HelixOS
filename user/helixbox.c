@@ -22,7 +22,14 @@
 #define SYS_exit        60
 #define SYS_getcwd      79
 #define SYS_chdir       80
+#define SYS_getpid      39
+#define SYS_kill        62
+#define SYS_rt_sigaction 13
+#define SYS_rt_sigprocmask 14
 #define WNOHANG          1
+#define SIGTERM         15
+#define SIGCHLD         17
+#define SIG_IGN  ((unsigned long)1)
 
 /* Linux open flags */
 #define O_RDONLY 0
@@ -404,6 +411,36 @@ done_sock:
                 xwrite("WaitFAIL\n");
         } else {
             xwrite("pipe_fork_fail\n");
+        }
+    }
+
+    /* M13: signals — SIGCHLD default-ignore + kill(child, SIGTERM) */
+    {
+        long pid = sys_fork();
+        if (pid == 0) {
+            /* child: wait until killed */
+            for (;;)
+                usys(SYS_yield, 0, 0, 0);
+        } else if (pid > 0) {
+            /* Give child a chance to run, then SIGTERM it */
+            usys(SYS_yield, 0, 0, 0);
+            long kr = usys(SYS_kill, pid, SIGTERM, 0);
+            int status = 0;
+            long wpid = 0;
+            for (int i = 0; i < 200; i++) {
+                wpid = usys6(SYS_wait4, pid, (long)&status, 0, 0, 0, 0);
+                if (wpid > 0)
+                    break;
+                usys(SYS_yield, 0, 0, 0);
+            }
+            /* Default terminate: exit_code = sig; wait status = sig<<8 */
+            int code = (status >> 8) & 0xFF;
+            if (kr == 0 && wpid == pid && code == SIGTERM)
+                xwrite("HelixSigOK\n");
+            else
+                xwrite("HelixSigFAIL\n");
+        } else {
+            xwrite("HelixSigFAIL fork\n");
         }
     }
 

@@ -8,6 +8,8 @@
 
 ## M0 — 仓库与工具链 `[x]`
 
+Goal（历史）：[`docs/GOAL_M0.md`](GOAL_M0.md)
+
 - [x] 项目命名确认：HelixOS / 内核 Helix
 - [x] 目录结构、README、LICENSE（MIT）、`.gitignore`
 - [x] `docs/ARCHITECTURE.md` `BUILD.md` `ROADMAP.md` `SYSCALLS.md`
@@ -21,6 +23,8 @@
 ---
 
 ## M1 — 启动与早期核 `[x]`
+
+Goal（历史）：[`docs/GOAL_M1.md`](GOAL_M1.md)
 
 - [x] UEFI：获取 MemoryMap（GOP 未做，M2+ 可选）
 - [x] `ExitBootServices`（失败重试；成功后切自有栈）
@@ -128,7 +132,7 @@ Goal 模式提示词（可直接粘贴）：[`docs/GOAL_M8.md`](GOAL_M8.md)
 
 **验证**：`make smoke-net`（含 `HelixNetOK` + **`user_udp_ok`**）。
 
-## M7 — 网络与图形（可后置） `[x]`（网络主路径；图形未做）
+## M7 — 网络与图形（可后置） `[x]`（网络主路径；图形见 M9）
 
 Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
@@ -142,6 +146,8 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 ---
 
 ## M9 — 图形（GOP 帧缓冲） `[x]`
+
+Goal（历史）：[`docs/GOAL_M9.md`](GOAL_M9.md)
 
 - [x] `efi.h` 新增 `EFI_GRAPHICS_OUTPUT_PROTOCOL`（GOP）结构体
 - [x] `boot_info.h` 新增 `fb_addr/fb_width/fb_height/fb_pitch/fb_bpp` 字段
@@ -161,6 +167,8 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 ## M10 — fork/exec `[x]`
 
+Goal（历史）：[`docs/GOAL_M10.md`](GOAL_M10.md)
+
 - [x] `fork`(57)：复制 task struct + 内核栈 + 用户页表（子进程独立 PML4，用户页物理复制）
 - [x] `execve`(59)：从 VFS 加载 ELF，替换当前 task 的用户空间、entry/stack/brk
 - [x] `user_pages[]` 跟踪：每个 task 最多2048 页（8 MiB），fork 时自动追踪复制的页面
@@ -173,6 +181,8 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 ---
 
 ## M11 — 进程生命周期（waitpid/pipe/shell） `[x]`
+
+Goal（历史）：[`docs/GOAL_M11.md`](GOAL_M11.md)
 
 - [x] `wait4`(61)：非阻塞轮询子进程，`WEXITSTATUS = (code & 0xFF) << 8`；zombie reap
 - [x] `pipe`(22)：环形缓冲管道，`EAGAIN` 非阻塞 + 用户态 yield 轮询
@@ -189,6 +199,8 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 ## M12 — cwd / chdir / 路径解析 / console stdin `[x]`
 
+Goal（历史）：[`docs/GOAL_M12.md`](GOAL_M12.md)
+
 - [x] per-task `cwd[256]`；`task_create` 默认 `"/"`；fork 经 memcpy 继承
 - [x] `getcwd`(79) 返回真实 cwd；`chdir`(80) 解析路径并校验目录
 - [x] `vfs_path_resolve`：相对路径 + `.`/`..`/`//` 归一化为绝对路径
@@ -201,7 +213,43 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 ---
 
+## M13 — 信号最小集 `[x]`
+
+Goal：[`docs/GOAL_M13.md`](GOAL_M13.md)
+
+- [x] per-task `sig_pending` / `sig_blocked` / `sighand[]`；`signal_task_init` / `signal_send` / `signal_deliver_current`
+- [x] `kill`(62) / `rt_sigaction`(13) / `rt_sigprocmask`(14)
+- [x] **SIGCHLD**：子 `exit` → 父 pending；默认忽略（与 wait 协作）
+- [x] **SIGINT**：COM1 Ctrl+C（0x03）→ 当前用户 task；默认终止
+- [x] **SIGTERM/SIGKILL**：default terminate；SIGKILL 不可屏蔽
+- [x] helixbox：`fork` + `kill(child, SIGTERM)` + `wait4` → **`HelixSigOK`**
+- [x] `SYSCALLS.md` / `smoke-linux` 检查 HelixSigOK
+
+**验证**：`make smoke-linux` 串口含 `HelixSigOK` + `HelixCwdOK` + `HelixMshOK` + `helixbox_smoke_done`。
+
+---
+
 ## 文档债务（随里程碑）
 
+- [x] README / ARCHITECTURE / BUILD 对齐到 **M13**（2026-08-01）
+- [x] `GOAL_M9`–`GOAL_M13` 历史 goal 补全；`GOAL_M4`/`M5` 修正过时表述
+- [x] Logo：`img/Helix*.png` 引用进 README
 - 每完成一阶段：更新本文件状态勾选与 `ARCHITECTURE.md` 中对应子系统
 - M5 起 `SYSCALLS.md` 必须与代码同步
+
+---
+
+## M14 — TCP full stack（下一里程碑）`[ ]`
+
+Goal：[`docs/GOAL_M14.md`](GOAL_M14.md)（实现时填写）
+
+- [ ] TCP 状态机（最小：CLOSED → SYN_SENT → ESTABLISHED → FIN 路径）
+- [ ] `socket`(SOCK_STREAM) + `connect`/`listen`/`accept`/`send`/`recv`（可映射 sendto/recvfrom 或 sendmsg/recvmsg）
+- [ ] helixbox / 内核自测 → 串口标记（如 `HelixTcpOK`）
+- [ ] `SYSCALLS.md` / smoke 更新；既有 UDP/ICMP/信号不回归
+
+**建议顺序**：state machine + 主动 `connect`；再 listen/accept；最后用户态 smoke。
+
+**验证（计划）**：`make smoke-net` 或 `smoke-linux` 含 TCP OK；M13 标记不丢。
+
+

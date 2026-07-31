@@ -55,7 +55,7 @@ C_SRCS := \
 	kernel/net/nic.c kernel/net/net.c kernel/net/udp.c \
 	kernel/fs/fat.c kernel/fs/vfs.c kernel/fs/fs.c kernel/fs/ramfs.c kernel/fs/pipe.c \
 	kernel/proc/elf.c kernel/proc/syscall.c kernel/proc/task.c \
-	kernel/proc/userland.c kernel/proc/exec.c
+	kernel/proc/signal.c kernel/proc/userland.c kernel/proc/exec.c
 
 S_SRCS := \
 	kernel/arch/x86_64/isr_stubs.S \
@@ -180,24 +180,7 @@ smoke-fs: esp
 smoke-linux: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
 	@HEADLESS=1 TIMEOUT_SECS=55 bash $(ROOT)/scripts/run-qemu.sh || true
-	@ok=1; \
-	if grep -a -F -q "HelixBusyBoxOK" $(ROOT)/serial.log 2>/dev/null; then \
-		echo "SMOKE-LINUX OK (BusyBox)"; \
-		grep -a -E 'BusyBox|HelixBusy|helixbox|HelixLinux|tmp_write' $(ROOT)/serial.log | head -40; \
-	else \
-		for pat in "HelixLinuxOK" "helixbox_smoke_done" "tmp_write_ok"; do \
-			grep -a -F -q "$$pat" $(ROOT)/serial.log 2>/dev/null || { echo "SMOKE-LINUX FAIL $$pat"; ok=0; }; \
-		done; \
-		[ "$$ok" = 1 ] && echo "SMOKE-LINUX OK (helixbox)" || { cat $(ROOT)/serial.log; exit 1; }; \
-	fi; \
-	if grep -a -F -q "HelixMshOK" $(ROOT)/serial.log 2>/dev/null; then \
-		echo "SMOKE-LINUX OK (msh pipeline)"; \
-	fi; \
-	if grep -a -F -q "HelixCwdOK" $(ROOT)/serial.log 2>/dev/null; then \
-		echo "SMOKE-LINUX OK (cwd/chdir)"; \
-	else \
-		echo "SMOKE-LINUX WARN: HelixCwdOK missing"; \
-	fi
+	@ok=1; 	if grep -a -F -q "HelixBusyBoxOK" $(ROOT)/serial.log 2>/dev/null; then 		echo "SMOKE-LINUX OK (BusyBox)"; 		grep -a -E 'BusyBox|HelixBusy|helixbox|HelixLinux|tmp_write' $(ROOT)/serial.log | head -40; 	else 		for pat in "HelixLinuxOK" "helixbox_smoke_done" "tmp_write_ok"; do 			grep -a -F -q "$$pat" $(ROOT)/serial.log 2>/dev/null || { echo "SMOKE-LINUX FAIL $$pat"; ok=0; }; 		done; 		[ "$$ok" = 1 ] && echo "SMOKE-LINUX OK (helixbox)" || { cat $(ROOT)/serial.log; exit 1; }; 	fi; 	if grep -a -F -q "HelixMshOK" $(ROOT)/serial.log 2>/dev/null; then 		echo "SMOKE-LINUX OK (msh pipeline)"; 	fi; 	if grep -a -F -q "HelixCwdOK" $(ROOT)/serial.log 2>/dev/null; then 		echo "SMOKE-LINUX OK (cwd/chdir)"; 	else 		echo "SMOKE-LINUX WARN: HelixCwdOK missing"; 	fi; 	if grep -a -F -q "HelixSigOK" $(ROOT)/serial.log 2>/dev/null; then 		echo "SMOKE-LINUX OK (signals)"; 	else 		echo "SMOKE-LINUX WARN: HelixSigOK missing"; 	fi
 
 smoke-musl: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd

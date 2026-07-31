@@ -1,6 +1,7 @@
 #pragma once
 
 #include "helix/types.h"
+#include "helix/signal.h"
 
 #define TASK_MAX        8
 #define TASK_NAME_MAX   16
@@ -29,6 +30,7 @@ struct task {
     struct task     *parent;
     enum task_state  state;
     int              exit_code;
+    int              term_sig;   /* 0 = normal exit; else killing signal */
     char             name[TASK_NAME_MAX];
     char             cwd[256];   /* absolute cwd; always starts with '/' */
     struct task_regs regs;
@@ -40,6 +42,10 @@ struct task {
     u64              brk_curr;    /* current program break */
     u64              user_pages[TASK_MAX_PAGES]; /* tracked user page phys addrs */
     int              user_page_count;
+    /* M13 signals */
+    u64              sig_pending;
+    u64              sig_blocked;
+    struct helix_sigaction sighand[HELIX_NSIG];
 };
 
 void          task_init(void);
@@ -69,6 +75,9 @@ int           task_getpid(void);
 /* M11 wait4: wait for a child. want=0 any, >0 specific, <-1 group.
  * Returns reaped pid; 0 if WNOHANG and none ready; -ECHILD if no children. */
 int           task_wait(int want, int *out_status, int options);
+
+/* Look up any task by pid (READY/RUNNING/ZOMBIE). */
+struct task  *task_find_by_pid(int pid);
 
 /* Called from syscall path when current task must resume another. */
 void          sched_switch_to(struct task *next);

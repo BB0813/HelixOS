@@ -1,4 +1,4 @@
-/* Auto-generated from Z:/HelixOS/build/user/init.elf — do not edit */
+/* Auto-generated from build/user/init.elf — do not edit */
 #pragma once
 static const unsigned char user_init_elf[] = {
     0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
