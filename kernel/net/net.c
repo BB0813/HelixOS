@@ -13,6 +13,7 @@
 #define ARP_OP_REQ    1
 #define ARP_OP_REP    2
 #define IP_PROTO_ICMP 1
+#define IP_PROTO_UDP  17
 #define ICMP_ECHO     8
 #define ICMP_ECHOREPLY 0
 
@@ -320,6 +321,18 @@ static void handle_ip(const u8 *pkt, u32 len)
 
     if (ip->proto == IP_PROTO_ICMP)
         handle_icmp(src, pkt + ihl, total - ihl);
+    else if (ip->proto == IP_PROTO_UDP && total > ihl + 8) {
+        /* Minimal UDP demux: [src_port_be(2), dst_port_be(2), len(2), csum(2)] */
+        const u8 *udp = pkt + ihl;
+        u16 sport_be = (u16)udp[0] | ((u16)udp[1] << 8);
+        u16 dport_be = (u16)udp[2] | ((u16)udp[3] << 8);
+        u16 udp_len  = (u16)udp[4] | ((u16)udp[5] << 8);
+        u32 plen = (udp_len > 8) ? (u32)(udp_len - 8) : 0;
+        const u8 *payload = udp + 8;
+        if (plen > (total - ihl - 8))
+            plen = total - ihl - 8;
+        net_udp_input(src, dst, sport_be, dport_be, payload, plen);
+    }
 }
 
 static void handle_frame(const u8 *frame, u32 len)
@@ -375,6 +388,43 @@ int net_ready(void)
 u32 net_icmp_echo_replies(void)
 {
     return g_icmp_replies;
+}
+
+u32 net_local_ip_be(void)
+{
+    /* g_ip is host order; swap to network order */
+    return ((g_ip & 0xFF) << 24) | ((g_ip >> 8 & 0xFF) << 16) |
+           ((g_ip >> 16 & 0xFF) << 8) | (g_ip >> 24);
+}
+
+int net_is_local_ip_be(u32 addr_be)
+{
+    return addr_be == net_local_ip_be() || addr_be == 0;
+}
+
+/* Build a UDP/IP packet and send it on the wire. */
+int net_udp_output(u32 dst_be, u16 sport_be, u16 dport_be,
+                   const void *data, u32 len)
+{
+    if (!g_ready)
+        return -1;
+    /* UDP header: src_port, dst_port, length, checksum(0) */
+    u8 pkt[1500];
+    if (8 + len > sizeof(pkt) - sizeof(struct ip_hdr) - sizeof(struct eth_hdr))
+        return -1;
+    struct {
+        u16 sport, dport, udplen, csum;
+    } *uh = (void *)pkt;
+    uh->sport  = sport_be;
+    uh->dport  = dport_be;
+    uh->udplen = htons_u16((u16)(8 + len));
+    uh->csum   = 0;
+    memcpy(pkt + 8, data, len);
+
+    /* Convert dst_be (network order) to host order for ip_send */
+    u32 dst_host = ((dst_be & 0xFF) << 24) | ((dst_be >> 8 & 0xFF) << 16) |
+                   ((dst_be >> 16 & 0xFF) << 8) | (dst_be >> 24);
+    return ip_send(dst_host, IP_PROTO_UDP, pkt, 8 + len);
 }
 
 void net_poll(void)

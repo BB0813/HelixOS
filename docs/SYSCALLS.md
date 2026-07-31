@@ -31,6 +31,10 @@
 | 24 | sched_yield | **done** | 协作 |
 | 33 | dup2 | **done** | |
 | 39 | getpid | **done** | |
+| 41 | socket | **done** | AF_INET / SOCK_DGRAM；UDP only |
+| 44 | sendto | **done** | UDP 发包；本地回环 |
+| 45 | recvfrom | **done** | UDP 收包（非阻塞） |
+| 49 | bind | **done** | UDP 端口绑定 |
 | 60 | exit | **done** | |
 | 63 | uname | **done** | sysname **Helix** |
 | 72 | fcntl | **partial** | stub |
@@ -38,11 +42,16 @@
 | 83 | mkdir | **done** | **`/tmp/...` 与 FAT 根 8.3** |
 | 158 | arch_prctl | **partial** | `ARCH_SET_FS` / `GET_FS`（MSR） |
 | 217 | getdents64 | **done** | FAT 根或 /tmp |
-| 41 | socket | **ENOSYS** | M7 未做；网络仅内核 ARP/ICMP |
-| 49 | bind | **ENOSYS** | |
-| 44 | sendto | **ENOSYS** | |
-| 45 | recvfrom | **ENOSYS** | |
-| 42 | connect | **ENOSYS** | |
+| 231 | exit_group | **done** | |
+| 257 | openat | **done** | 重定向至 open |
+| 262 | newfstatat | **done** | 重定向至 fstatat |
+| 318 | getrandom | **done** | 软实现（ticks） |
+| 41 | socket | **done** | AF_INET/SOCK_DGRAM；UDP only |
+| 44 | sendto | **done** | UDP 发包 |
+| 45 | recvfrom | **done** | UDP 收包（非阻塞） |
+| 49 | bind | **done** | UDP 端口绑定 |
+| 56 | connect | **ENOSYS** | TCP 待 M9 |
+| 50 | listen | **ENOSYS** | |
 | 43 | accept | **ENOSYS** | |
 
 Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
@@ -67,3 +76,4 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-07-29 | M6 收尾：mmap 标志文档化；ARCHITECTURE/BUILD 动态路径 |
 | 2026-07-31 | **真 musl** `ld-musl` + PIE hello → **`HelloMuslDynOK`**（`make smoke-musl`） |
 | 2026-07-31 | M7：e1000 + ARP/IPv4/ICMP → **`HelixNetOK`**；socket 仍 ENOSYS |
+| 2026-07-31 | M8：UDP socket（`socket`/`bind`/`sendto`/`recvfrom`）→ **`user_udp_ok`** |

@@ -12,6 +12,7 @@
 #include "helix/pmm.h"
 #include "helix/vmm.h"
 #include "helix/paging.h"
+#include "helix/net.h"
 
 u64 g_syscall_kstack;
 u64 g_syscall_user_rsp;
@@ -442,6 +443,121 @@ static i64 sys_getcwd(u64 buf, u64 size)
     return (i64)buf;
 }
 
+/* Linux x86_64: socket(AF_INET=2, SOCK_DGRAM=2, IPPROTO_UDP=17) */
+static i64 sys_socket(u64 domain, u64 type, u64 protocol)
+{
+    (void)protocol;
+    if (domain != 2 /* AF_INET */ || type != 2 /* SOCK_DGRAM */)
+        return ERR(EOPNOTSUPP);
+    struct helix_sock *s = net_sock_alloc_udp();
+    if (!s)
+        return ERR(ENOSPC); /* table full */
+    /* Allocate a vfs_file wrapper; fs_priv = helix_sock* */
+    struct vfs_file *f = kmalloc(sizeof(struct vfs_file));
+    if (!f) {
+        net_sock_free(s);
+        return ERR(ENOMEM);
+    }
+    memset(f, 0, sizeof(*f));
+    f->is_socket = 1;
+    f->fs_priv   = s;
+    fd_init_task_stdio();
+    int fd = fd_install(f);
+    if (fd < 0) {
+        kfree(f);
+        net_sock_free(s);
+        return ERR(ENOSPC);
+    }
+    return fd;
+}
+
+static i64 sys_bind(u64 fd, u64 sockaddr, u64 addrlen)
+{
+    (void)addrlen;
+    if (!user_ptr_ok((const void *)(uintptr_t)sockaddr, 16))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || !f->is_socket)
+        return ERR(ENOTSOCK);
+    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
+    /* Parse sockaddr_in */
+    const u8 *sa = (const u8 *)(uintptr_t)sockaddr;
+    u16 family = (u16)sa[0] | ((u16)sa[1] << 8);
+    if (family != 2 /* AF_INET */)
+        return ERR(EOPNOTSUPP);
+    u16 port_be = (u16)sa[2] | ((u16)sa[3] << 8);
+    u32 addr_be = (u32)sa[4] | ((u32)sa[5] << 8) |
+                  ((u32)sa[6] << 16) | ((u32)sa[7] << 24);
+    return net_sock_bind(s, addr_be, port_be);
+}
+
+static i64 sys_sendto(u64 fd, u64 buf, u64 len, u64 flags, u64 sockaddr, u64 addrlen)
+{
+    (void)flags; (void)addrlen;
+    if (len == 0)
+        return 0;
+    if (!user_ptr_ok((const void *)(uintptr_t)buf, len))
+        return ERR(EFAULT);
+    if (!user_ptr_ok((const void *)(uintptr_t)sockaddr, 16))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || !f->is_socket)
+        return ERR(ENOTSOCK);
+    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
+    const u8 *sa = (const u8 *)(uintptr_t)sockaddr;
+    u16 port_be = (u16)sa[2] | ((u16)sa[3] << 8);
+    u32 addr_be = (u32)sa[4] | ((u32)sa[5] << 8) |
+                  ((u32)sa[6] << 16) | ((u32)sa[7] << 24);
+    return net_sock_sendto(s, (const void *)(uintptr_t)buf,
+                           (u32)len, addr_be, port_be);
+}
+
+static i64 sys_recvfrom(u64 fd, u64 buf, u64 len, u64 flags, u64 sockaddr, u64 addrlen)
+{
+    (void)flags; (void)addrlen;
+    if (len == 0)
+        return 0;
+    if (!user_ptr_ok((void *)(uintptr_t)buf, len))
+        return ERR(EFAULT);
+    if (sockaddr != 0 && !user_ptr_ok((void *)(uintptr_t)sockaddr, 16))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || !f->is_socket)
+        return ERR(ENOTSOCK);
+    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
+    u32 src_be = 0; u16 sport_be = 0;
+    int r = net_sock_recvfrom(s, (void *)(uintptr_t)buf,
+                              (u32)len, &src_be, &sport_be);
+    if (r < 0)
+        return (i64)r; /* -EAGAIN etc */
+    if (sockaddr != 0 && r > 0) {
+        u8 *sa = (u8 *)(uintptr_t)sockaddr;
+        memset(sa, 0, 16);
+        sa[0] = 2; sa[1] = 0; /* AF_INET */
+        sa[2] = (u8)(sport_be >> 8); sa[3] = (u8)sport_be; /* sport BE */
+        sa[4] = (u8)(src_be);  sa[5] = (u8)(src_be >> 8);
+        sa[6] = (u8)(src_be >> 16); sa[7] = (u8)(src_be >> 24);
+    }
+    return (i64)r;
+}
+
+static i64 sys_getrandom(u64 buf, u64 len, u64 flags)
+{
+    (void)flags;
+    if (!user_ptr_ok((void *)(uintptr_t)buf, len))
+        return ERR(EFAULT);
+    /* Fill with deterministic-ish data (timer ticks) */
+    extern u64 timer_ticks(void);
+    u8 *out = (u8 *)(uintptr_t)buf;
+    u64 t = timer_ticks();
+    for (u64 i = 0; i < len; i++)
+        out[i] = (u8)(t + i * 37);
+    return (i64)len;
+}
+
 u64 syscall_entry_c(struct syscall_frame *f)
 {
     struct task *t = task_current();
@@ -496,6 +612,11 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case SYS_getdents64:  ret = sys_getdents64(f->a0, f->a1, f->a2); break;
     case SYS_openat:      ret = sys_openat(f->a0, f->a1, f->a2, f->a3); break;
     case SYS_newfstatat:  ret = sys_newfstatat(f->a0, f->a1, f->a2, f->a3); break;
+    case 41:  /* socket */   ret = sys_socket(f->a0, f->a1, f->a2); break;
+    case 44:  /* sendto */   ret = sys_sendto(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
+    case 45:  /* recvfrom */ ret = sys_recvfrom(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
+    case 49:  /* bind */     ret = sys_bind(f->a0, f->a1, f->a2); break;
+    case 318: /* getrandom */ret = sys_getrandom(f->a0, f->a1, f->a2); break;
     default:
         kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
         ret = ERR(ENOSYS);

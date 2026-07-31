@@ -9,6 +9,10 @@
 #define SYS_mkdir      83
 #define SYS_getdents64 217
 #define SYS_exit_group 231
+#define SYS_socket      41
+#define SYS_sendto      44
+#define SYS_recvfrom    45
+#define SYS_bind        49
 
 /* Linux open flags */
 #define O_RDONLY 0
@@ -41,6 +45,21 @@ static long usys(long nr, long a0, long a1, long a2)
     __asm__ volatile("syscall"
                      : "=a"(ret)
                      : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
+/* 6-arg syscall (sendto, recvfrom): a3→r10, a4→r8, a5→r9 */
+static long usys6(long nr, long a0, long a1, long a2, long a3, long a4, long a5)
+{
+    long ret;
+    register long r10 __asm__("r10") = a3;
+    register long r8  __asm__("r8")  = a4;
+    register long r9  __asm__("r9")  = a5;
+    __asm__ volatile("syscall"
+                     : "=a"(ret)
+                     : "a"(nr), "D"(a0), "S"(a1), "d"(a2),
+                       "r"(r10), "r"(r8), "r"(r9)
                      : "rcx", "r11", "memory");
     return ret;
 }
@@ -203,6 +222,53 @@ static void cmd_smoke(void)
         xwrite("tmp open failed\n");
     }
 
+    /* M8: UDP echo self-test (local loopback) */
+    {
+        /* AF_INET=2, SOCK_DGRAM=2, UDP=17 */
+        long sfd = usys(SYS_socket, 2, 2, 17);
+        if (sfd < 0) {
+            xwrite("socket fail\n");
+            goto done;
+        }
+        /* sockaddr_in: family=2, port=0x3930 (14640 big-endian), addr=127.0.0.1 BE = 0x0100007f */
+        unsigned char sa[16];
+        sa[0] = 2; sa[1] = 0;          /* AF_INET */
+        sa[2] = 0x39; sa[3] = 0x30;     /* port 14640 BE */
+        sa[4] = 127; sa[5] = 0; sa[6] = 0; sa[7] = 1; /* 127.0.0.1 BE */
+        sa[8] = sa[9] = sa[10] = sa[11] = sa[12] = sa[13] = sa[14] = sa[15] = 0;
+        long r = usys(SYS_bind, sfd, (long)sa, 16);
+        if (r < 0) {
+            xwrite("bind fail\n");
+            goto done_sock;
+        }
+        /* sendto: "HelixNetOK" to 127.0.0.1:14640 */
+        const char *udp_payload = "HelixNetOK";
+        unsigned char rsa[16];
+        rsa[0] = 2; rsa[1] = 0;
+        rsa[2] = 0x39; rsa[3] = 0x30;
+        rsa[4] = 127; rsa[5] = 0; rsa[6] = 0; rsa[7] = 1;
+        rsa[8] = rsa[9] = rsa[10] = rsa[11] = rsa[12] = rsa[13] = rsa[14] = rsa[15] = 0;
+        long slen = 0;
+        while (udp_payload[slen]) slen++;
+        r = usys6(SYS_sendto, sfd, (long)udp_payload, slen, 0, (long)rsa, 16);
+        if (r >= 0) {
+            /* recvfrom (expect local echo) */
+            char rbuf[64];
+            long nr = usys6(SYS_recvfrom, sfd, (long)rbuf, 64, 0, 0, 0);
+            if (nr > 0) {
+                /* check that content starts with "HelixNetOK" */
+                int ok = 1;
+                const char *expect = "HelixNetOK";
+                for (long i = 0; i < nr && i < 10; i++)
+                    if (rbuf[i] != expect[i]) ok = 0;
+                if (ok)
+                    xwrite("user_udp_ok\n");
+            }
+        }
+done_sock:
+        usys(SYS_close, sfd, 0, 0);
+    }
+done:
     xwrite("helixbox_smoke_done\n");
 }
 

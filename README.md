@@ -21,13 +21,14 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M7 最小闭环**（2026-07-31）
+**M0–M8 最小闭环**（2026-07-31）
 
 - M0–M3：UEFI、早期核、shell、Ring3 协作
 - M4：**FAT16 可写**（AHCI 持久化）+ VFS + `/tmp` ramfs
 - M5：Linux 号 syscall、`helixbox`、可选 **BusyBox** `echo`
 - M6：`ld-helix` + **真 musl** → `HelloDynOK` / `HelloMuslDynOK`
 - M7：**e1000** + eth/ARP/IPv4/**ICMP** → **`HelixNetOK`**（无 socket、无 GUI）
+- M8：**UDP socket**（`socket`/`bind`/`sendto`/`recvfrom`）→ **`user_udp_ok`**（helixbox 自检）
 - 验证：`make smoke-fs` · `make smoke-musl` · `make smoke-linux` · **`make smoke-net`**
 
 ## 快速开始
@@ -39,7 +40,7 @@ make smoke-linux           # BusyBox 或 helixbox
 make smoke-net             # ICMP 自测 HelixNetOK
 ```
 
-串口关键标记：`HelixFATWriteOK` · `HelloMuslDynOK` · `HelixBusyBoxOK` · **`HelixNetOK`**
+串口关键标记：`HelixFATWriteOK` · `HelloMuslDynOK` · `HelixBusyBoxOK` · **`HelixNetOK`** · **`user_udp_ok`**
 
 ## 快速开始
 

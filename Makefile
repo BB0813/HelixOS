@@ -52,7 +52,7 @@ C_SRCS := \
 	kernel/arch/x86_64/pit.c kernel/arch/x86_64/timer.c \
 	kernel/arch/x86_64/irq.c \
 	kernel/drv/blk_ahci.c kernel/drv/virtio_net.c kernel/drv/e1000.c \
-	kernel/net/nic.c kernel/net/net.c \
+	kernel/net/nic.c kernel/net/net.c kernel/net/udp.c \
 	kernel/fs/fat.c kernel/fs/vfs.c kernel/fs/fs.c kernel/fs/ramfs.c \
 	kernel/proc/elf.c kernel/proc/syscall.c kernel/proc/task.c \
 	kernel/proc/userland.c kernel/proc/exec.c

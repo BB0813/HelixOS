@@ -23,6 +23,7 @@ struct vfs_file {
     int   is_console; /* 1=out, 2=in */
     int   is_dir;
     int   writable;
+    int   is_socket;  /* 1 = fs_priv is helix_sock* */
 };
 
 struct vfs_ops {

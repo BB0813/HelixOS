@@ -16,5 +16,10 @@
 #define ENOSPC      28
 #define ERANGE      34
 #define ENOSYS      38
+#define EADDRINUSE  98
+#define ENOTSOCK    88
+#define EOPNOTSUPP  95
+#define EMSGSIZE    90
+#define ECONNREFUSED 111
 
 #define ERR(_e) (-(long)(_e))

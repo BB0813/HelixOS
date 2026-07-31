@@ -229,6 +229,13 @@ int fd_close(int fd)
     if (!f)
         return -1;
     tab[fd] = 0;
+    if (f->is_socket) {
+        extern void net_sock_free(void *s);
+        net_sock_free(f->fs_priv);
+        extern void kfree(void *ptr);
+        kfree(f);
+        return 0;
+    }
     return vfs_close(f);
 }
 

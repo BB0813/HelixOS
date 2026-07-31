@@ -111,6 +111,20 @@ Goal：[`docs/GOAL_M6.md`](GOAL_M6.md) · 完整 musl：[`docs/GOAL_M6_musl.md`]
 
 **验证**：`make smoke-dyn` · `make smoke-musl`。
 
+## M8 — 用户态网络（UDP socket） `[x]`
+
+Goal 模式提示词（可直接粘贴）：[`docs/GOAL_M8.md`](GOAL_M8.md)
+
+- [x] `socket`/`bind`/`sendto`/`recvfrom`（UDP，AF_INET/SOCK_DGRAM）
+- [x] `net_udp_output` + UDP RX demux → socket receive queue
+- [x] `helixbox` applet：UDP 本地回环自检（sendto → recvfrom → `user_udp_ok`）
+- [x] `getrandom` syscall（helixbox/BusyBox 兼容）
+- [x] socket FD 通过 VFS 安装（`is_socket` 标志 + kmalloc wrapper）
+- [ ] TCP stub（`connect`/`accept`/`listen` → ENOSYS）
+- [ ] 宿主机 ↔ guest UDP ping
+
+**验证**：`make smoke-net`（含 `HelixNetOK` + **`user_udp_ok`**）。
+
 ## M7 — 网络与图形（可后置） `[x]`（网络主路径；图形未做）
 
 Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)

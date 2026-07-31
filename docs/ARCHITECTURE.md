@@ -109,7 +109,7 @@ UEFI firmware (OVMF)
 | Linux 兼容子集 | M5 **done** | helixbox + 可选 BusyBox echo；uname=Helix |
 | Linux syscall 表 | M5–M6 | 见 `SYSCALLS.md` |
 | 动态链接 | M6 **done** | `ld-helix` + **真 musl** `ld-musl`/`hello.musl` |
-| 网络 | M7 **done（最小）** | e1000（主）/ virtio-net（备）；eth+ARP+IPv4+ICMP；无 TCP/socket |
+| 网络 | M7-M8 **done（最小）** | e1000 + ARP/IPv4/ICMP + UDP socket；无 TCP |
 | 图形 | M7 **未做** | 无 GOP/framebuffer；串口 CLI only |
 
 ## ABI policy
