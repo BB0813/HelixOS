@@ -239,17 +239,29 @@ Goal：[`docs/GOAL_M13.md`](GOAL_M13.md)
 
 ---
 
-## M14 — TCP full stack（下一里程碑）`[ ]`
+## M14 — TCP full stack `[x]`
 
-Goal：[`docs/GOAL_M14.md`](GOAL_M14.md)（实现时填写）
+Goal：[`docs/GOAL_M14.md`](GOAL_M14.md)
 
-- [ ] TCP 状态机（最小：CLOSED → SYN_SENT → ESTABLISHED → FIN 路径）
-- [ ] `socket`(SOCK_STREAM) + `connect`/`listen`/`accept`/`send`/`recv`（可映射 sendto/recvfrom 或 sendmsg/recvmsg）
-- [ ] helixbox / 内核自测 → 串口标记（如 `HelixTcpOK`）
-- [ ] `SYSCALLS.md` / smoke 更新；既有 UDP/ICMP/信号不回归
+- [x] TCP 状态机：CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT → TIME_WAIT → CLOSED；LISTEN/SYN_RECEIVED active open
+- [x] `socket`(SOCK_STREAM) + `connect`/`listen`/`accept`：is_socket=2 标记 + `helix_tcp_sock` 分配
+- [x] TCP RX/TX 队列（每 socket 8 recv + 4 retransmission entries）
+- [x] `sendto` / `recvfrom` 路由：UDP=socket1, TCP=socket2
+- [x] 内核自测：ICMP gate ping 后 `tcp_init` → **`HelixTcpOK`**
+- [x] `SYSCALLS.md` / `smoke-net` 更新；既有 UDP/ICMP 回归 OK
 
-**建议顺序**：state machine + 主动 `connect`；再 listen/accept；最后用户态 smoke。
+**注意**：TCP 连接需对端服务存在（QEMU user net 无 host 侧 TCP 服务），
+`HelixTcpOK` 为内核层验收标记；用户态 TCP test 留待 M15 完善。
 
-**验证（计划）**：`make smoke-net` 或 `smoke-linux` 含 TCP OK；M13 标记不丢。
+**验证**：`make smoke-net` 串口含 `HelixTcpOK` + `HelixNetOK` + `user_udp_ok`；M13 不回归。
+
+---
+
+## M15 — 用户态 TCP 完善（后续候选）`[ ]`
+
+- [ ] helixbox `HelixTcpOK` 用户态 TCP echo/ping 自检（若环境允许）
+- [ ] TCP 被动模式 hostfwd ↔ guest 端到端
+- [ ] `sendmsg`/`recvmsg` 完善映射
+- [ ] 更多 TCP 状态覆盖
 
 

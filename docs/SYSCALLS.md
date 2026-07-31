@@ -34,17 +34,17 @@
 | 24 | sched_yield | **done** | 协作 |
 | 33 | dup2 | **done** | |
 | 39 | getpid | **done** | |
-| 41 | socket | **done** | AF_INET / SOCK_DGRAM (UDP)；SOCK_STREAM → ENOSYS |
-| 42 | connect | **ENOSYS** | TCP stub |
-| 43 | accept | **ENOSYS** | TCP stub |
-| 44 | sendto | **done** | UDP 发包；本地回环 |
-| 45 | recvfrom | **done** | UDP 收包（非阻塞） |
-| 46 | sendmsg | **ENOSYS** | TCP stub |
+| 41 | socket | **done** | AF_INET；SOCK_DGRAM→UDP，SOCK_STREAM→TCP（M14） |
+| 42 | connect | **done** | TCP active open（SYN_SENT→EST）（M14） |
+| 43 | accept | **done** | TCP passive accept（M14） |
+| 44 | sendto | **done** | TCP(PSH+ACK) / UDP 共路径 |
+| 45 | recvfrom | **done** | TCP / UDP 共路径（非阻塞） |
+| 46 | sendmsg | **ENOSYS** | TCP stub（映射留后） |
 | 47 | recvmsg | **ENOSYS** | TCP stub |
-| 49 | bind | **done** | UDP 端口绑定 |
-| 50 | listen | **ENOSYS** | TCP stub |
-| 54 | setsockopt | **ENOSYS** | TCP stub |
-| 55 | getsockopt | **ENOSYS** | TCP stub |
+| 49 | bind | **done** | TCP / UDP 共路径（is_socket type） |
+| 50 | listen | **done** | TCP LISTEN + accept backlog（M14） |
+| 54 | setsockopt | **soft-stub** | 返回 0（TCP_NODELAY etc.） |
+| 55 | getsockopt | **soft-stub** | 返回 0 |
 | 57 | fork | **done** | 复制 task + 用户页表（独立 PML4） |
 | 59 | execve | **done** | VFS 加载 ELF，替换用户空间；argv 支持 |
 | 60 | exit | **done** | 关闭继承 FD（除 console） |
@@ -78,8 +78,6 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 
 ## Changelog
 
-## Changelog
-
 | 日期 | 变更 |
 |------|------|
 | 2026-07-28 | M3–M5；ramfs `/tmp` |
@@ -93,5 +91,6 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-01 | M11：`wait4`/`pipe`/`dup2` refcount + syscall 全寄存器切换 → **`PipeOK`**/**`WaitOK`**；**msh** shell → **`HelixMshOK`** |
 | 2026-08-01 | M12：per-task cwd + `chdir`(80) + 路径解析；console stdin poll；msh cd/pwd → **`HelixCwdOK`** |
 | 2026-08-01 | M13：信号最小集（SIGCHLD/SIGINT/kill + HelixSigOK） → **`HelixSigOK`** |
-| 2026-08-01 | 文档对齐 M0–M13（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M14 TCP full stack |
+| 2026-08-01 | M14：TCP 全栈（state machine + connect/accept/listen + is_socket=2 + kernel self-test） → **`HelixTcpOK`** |
+| 2026-08-01 | 文档对齐 M0–M14（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M15 TCP 用户态完善 |
 

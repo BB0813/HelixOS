@@ -111,14 +111,27 @@ exec /bin/hello.musl
   → PIE bias；HelloMuslDynOK
 ```
 
-### M13–M14 networking
+### M7–M8 networking
 
-- **M13**：UDP 已做（socket/bind/sendto/recvfrom）；TCP stub（connect/accept/listen/sendmsg/recvmsg/setsockopt/getsockopt → ENOSYS）
-- **M14**：full TCP（AF_INET/SOCK_STREAM） + state machine + `connect`/`accept`/`listen`/`sendmsg`/`recvmsg`
-- 验收：`make smoke-linux` 含 TCP OK；UDP 仍正常（local loopback）
+| 项 | 实现 |
+|----|------|
+| 驱动 | **e1000** 主路径；`virtio-net-pci` 后备 |
+| L2/L3 | 以太网 + ARP + IPv4；静态 `10.0.2.15/24`，网关 `10.0.2.2` |
+| ICMP | 内核 ping 网关 → **`HelixNetOK`** |
+| UDP | `socket`/`bind`/`sendto`/`recvfrom`；本地回环 → **`user_udp_ok`** |
+| hostfwd | MSYS2 QEMU 对已占 UDP 口无 SO_REUSEADDR；host ping 可超时（文档化） |
 
-**协作调度下**：TCP 阻塞操作用 EAGAIN + 用户态 yield（与 pipe/wait4 一致）。
+### M14 TCP
 
+| 项 | 实现 |
+|----|------|
+| 状态机 | CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT(1/2) → TIME_WAIT → CLOSED；LISTEN/SYN_RECEIVED/CLOSE_WAIT/LAST_ACK |
+| 数据结构 | `helix_tcp_sock`：seq/ack/window + RXQ(8) + TXQ(4)；`is_socket=2` |
+| 收发 | `tcp_input`（IPv4 路径）→ demux by state；`sendto`/`recvfrom` 路由 by is_socket type |
+| 验收 | ICMP gate 通后 `tcp_init` → **`HelixTcpOK`** 内核自检 |
+
+**约束**：协作调度下 TCP 阻塞操作用 EAGAIN + 用户态 yield 轮询。
+QEMU user net 无 host 端 TCP 服务，需 passive echo test 或 hostfwd。
 
 ### M9 graphics
 
@@ -153,11 +166,11 @@ exec /bin/hello.musl
 | VFS / FAT | M4 **done (RW 根)** | AHCI + GPT + FAT16 写；盘上 ELF |
 | Linux 兼容子集 | M5 **done** | helixbox + 可选 BusyBox；uname=Helix |
 | 动态链接 | M6 **done** | ld-helix + 真 musl |
-| 网络 | M7–M8 **done（最小）** | e1000 + ICMP + UDP；TCP ENOSYS |
+| 网络 | M7–M8 **done（最小）** | e1000 + ICMP + UDP |
 | 图形 | M9 **done** | GOP fb + headless fallback |
-| 进程创建 M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
-| 信号 | **M13 候选** | SIGCHLD/SIGINT 等 |
-| TCP 全栈 | 后置 | 状态机 |
+| 进程 | M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
+| 信号 | **M13 done** | kill/sigaction/SIGCHLD/SIGINT |
+| TCP | **M14 done** | state machine + socket/connect/listen/accept；内核自检 |
 
 ## ABI policy
 

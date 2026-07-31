@@ -15,6 +15,7 @@
 #include "helix/net.h"
 #include "helix/pipe.h"
 #include "helix/signal.h"
+#include "helix/tcp.h"
 
 u64 g_syscall_kstack;
 u64 g_syscall_user_rsp;
@@ -618,15 +619,27 @@ static i64 sys_chdir(u64 path)
     return 0;
 }
 
-/* Linux x86_64: socket(AF_INET=2, SOCK_DGRAM=2, IPPROTO_UDP=17) */
+/* Linux x86_64: socket(AF_INET=2, SOCK_DGRAM=2/SOCK_STREAM=1) */
 static i64 sys_socket(u64 domain, u64 type, u64 protocol)
 {
     (void)protocol;
     if (domain != 2 /* AF_INET */)
         return ERR(EOPNOTSUPP);
+    fd_init_task_stdio();
+
     if (type == 1 /* SOCK_STREAM */) {
-        /* TCP stub — not implemented yet */
-        return ERR(ENOSYS);
+        /* M14: TCP socket — allocate via tcp.c */
+        extern struct helix_tcp_sock *tcp_alloc_conn(void);
+        struct helix_tcp_sock *ts = tcp_alloc_conn();
+        if (!ts) return ERR(ENOSPC);
+        struct vfs_file *f = kmalloc(sizeof(struct vfs_file));
+        if (!f) { extern void tcp_free(struct helix_tcp_sock *); tcp_free(ts); return ERR(ENOMEM); }
+        memset(f, 0, sizeof(*f));
+        f->is_socket = 2; /* type=T for future identification in bind/send etc. */
+        f->fs_priv   = ts;
+        int fd = fd_install(f);
+        if (fd < 0) { kfree(f); extern void tcp_free(struct helix_tcp_sock *); tcp_free(ts); return ERR(ENOSPC); }
+        return fd;
     }
     if (type != 2 /* SOCK_DGRAM */)
         return ERR(EOPNOTSUPP);
@@ -652,6 +665,7 @@ static i64 sys_socket(u64 domain, u64 type, u64 protocol)
     return fd;
 }
 
+/* M14: bind supports both UDP and TCP sockets (is_socket=1 UDP, =2 TCP) */
 static i64 sys_bind(u64 fd, u64 sockaddr, u64 addrlen)
 {
     (void)addrlen;
@@ -661,8 +675,6 @@ static i64 sys_bind(u64 fd, u64 sockaddr, u64 addrlen)
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
-    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
-    /* Parse sockaddr_in */
     const u8 *sa = (const u8 *)(uintptr_t)sockaddr;
     u16 family = (u16)sa[0] | ((u16)sa[1] << 8);
     if (family != 2 /* AF_INET */)
@@ -670,6 +682,13 @@ static i64 sys_bind(u64 fd, u64 sockaddr, u64 addrlen)
     u16 port_be = (u16)sa[2] | ((u16)sa[3] << 8);
     u32 addr_be = (u32)sa[4] | ((u32)sa[5] << 8) |
                   ((u32)sa[6] << 16) | ((u32)sa[7] << 24);
+    if (f->is_socket == 2) {
+        /* TCP socket */
+        extern int tcp_bind(struct helix_tcp_sock *, u32, u16);
+        int r = tcp_bind((struct helix_tcp_sock *)f->fs_priv, addr_be, port_be);
+        return r < 0 ? ERR(-r) : 0;
+    }
+    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
     return net_sock_bind(s, addr_be, port_be);
 }
 
@@ -739,28 +758,81 @@ static i64 sys_getrandom(u64 buf, u64 len, u64 flags)
     return (i64)len;
 }
 
-/* TCP stubs — return ENOSYS until TCP stack is implemented */
-static i64 sys_connect_stub(u64 fd, u64 addr, u64 addrlen)
+/* TCP stubs — replaced by M14 TCP stack */
+#include "helix/tcp.h"
+
+static i64 sys_connect(u64 fd, u64 addr, u64 addrlen)
 {
-    (void)fd; (void)addr; (void)addrlen;
-    return ERR(ENOSYS);
+    (void)addrlen;
+    if (!user_ptr_ok((const void *)(uintptr_t)addr, 16))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || f->is_socket != 2)
+        return ERR(ENOTSOCK);
+    struct helix_tcp_sock *ts = (struct helix_tcp_sock *)f->fs_priv;
+    const u8 *sa = (const u8 *)(uintptr_t)addr;
+    u16 port_be = (u16)sa[2] | ((u16)sa[3] << 8);
+    u32 addr_be = (u32)sa[4] | ((u32)sa[5] << 8) |
+                  ((u32)sa[6] << 16) | ((u32)sa[7] << 24);
+    extern int tcp_connect(struct helix_tcp_sock *, u32, u16);
+    int r = tcp_connect(ts, addr_be, port_be);
+    if (r < 0) return ERR(-r);
+    /* connection request sent → return success (async connect) */
+    return 0;
 }
 
-static i64 sys_accept_stub(u64 fd, u64 addr, u64 addrlen)
+static i64 sys_accept(u64 fd, u64 addr, u64 addrlen)
 {
-    (void)fd; (void)addr; (void)addrlen;
-    return ERR(ENOSYS);
+    (void)addrlen;
+    if (addr != 0 && !user_ptr_ok((void *)(uintptr_t)addr, 16))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || f->is_socket != 2)
+        return ERR(ENOTSOCK);
+    struct helix_tcp_sock *listen_sock = (struct helix_tcp_sock *)f->fs_priv;
+    extern struct helix_tcp_sock *tcp_accept(struct helix_tcp_sock *);
+    struct helix_tcp_sock *child = tcp_accept(listen_sock);
+    if (!child)
+        return ERR(EAGAIN); /* no pending connection */
+    /* Wrap child in a new FD */
+    struct vfs_file *cf = kmalloc(sizeof(struct vfs_file));
+    if (!cf) return ERR(ENOMEM);
+    memset(cf, 0, sizeof(*cf));
+    cf->is_socket = 2;
+    cf->fs_priv   = child;
+    int cfd = fd_install(cf);
+    if (cfd < 0) { kfree(cf); return ERR(ENOSPC); }
+    /* Fill remote address */
+    if (addr != 0) {
+        u8 *sa = (u8 *)(uintptr_t)addr;
+        memset(sa, 0, 16);
+        sa[0] = 2; sa[1] = 0; /* AF_INET */
+        sa[2] = (u8)(child->rport_be >> 8); sa[3] = (u8)child->rport_be;
+        sa[4] = (u8)(child->raddr_be);  sa[5] = (u8)(child->raddr_be >> 8);
+        sa[6] = (u8)(child->raddr_be >> 16); sa[7] = (u8)(child->raddr_be >> 24);
+    }
+    return cfd;
 }
 
-static i64 sys_listen_stub(u64 fd, u64 backlog)
+static i64 sys_listen(u64 fd, u64 backlog)
 {
-    (void)fd; (void)backlog;
-    return ERR(ENOSYS);
+    (void)backlog;
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || f->is_socket != 2)
+        return ERR(ENOTSOCK);
+    struct helix_tcp_sock *ts = (struct helix_tcp_sock *)f->fs_priv;
+    extern int tcp_listen(struct helix_tcp_sock *, u16);
+    int r = tcp_listen(ts, ts->lport_be);
+    return r < 0 ? ERR(-r) : 0;
 }
 
 static i64 sys_sendmsg_stub(u64 fd, u64 msg, u64 flags)
 {
     (void)fd; (void)msg; (void)flags;
+    /* M14: map sendmsg to send (simple) — for TCP send path */
     return ERR(ENOSYS);
 }
 
@@ -773,13 +845,14 @@ static i64 sys_recvmsg_stub(u64 fd, u64 msg, u64 flags)
 static i64 sys_setsockopt_stub(u64 fd, u64 level, u64 optname, u64 optval, u64 optlen)
 {
     (void)fd; (void)level; (void)optname; (void)optval; (void)optlen;
-    return ERR(ENOSYS);
+    /* setsockopt soft-stub: success (TCP_NODELAY etc.) */
+    return 0;
 }
 
 static i64 sys_getsockopt_stub(u64 fd, u64 level, u64 optname, u64 optval, u64 optlen)
 {
     (void)fd; (void)level; (void)optname; (void)optval; (void)optlen;
-    return ERR(ENOSYS);
+    return 0;
 }
 
 /* M10: fork — duplicate current process */
@@ -1005,9 +1078,9 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case 45:  /* recvfrom */ ret = sys_recvfrom(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
     case 49:  /* bind */     ret = sys_bind(f->a0, f->a1, f->a2); break;
     case 318: /* getrandom */ret = sys_getrandom(f->a0, f->a1, f->a2); break;
-    case 42:  /* connect */   ret = sys_connect_stub(f->a0, f->a1, f->a2); break;
-    case 43:  /* accept */    ret = sys_accept_stub(f->a0, f->a1, f->a2); break;
-    case 50:  /* listen */    ret = sys_listen_stub(f->a0, f->a1); break;
+    case 42:  /* connect */   ret = sys_connect(f->a0, f->a1, f->a2); break;
+    case 43:  /* accept */    ret = sys_accept(f->a0, f->a1, f->a2); break;
+    case 50:  /* listen */    ret = sys_listen(f->a0, f->a1); break;
     case 46:  /* sendmsg */   ret = sys_sendmsg_stub(f->a0, f->a1, f->a2); break;
     case 47:  /* recvmsg */   ret = sys_recvmsg_stub(f->a0, f->a1, f->a2); break;
     case 54:  /* setsockopt */ret = sys_setsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;

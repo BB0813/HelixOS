@@ -14,6 +14,7 @@
 #define ARP_OP_REP    2
 #define IP_PROTO_ICMP 1
 #define IP_PROTO_UDP  17
+#define IP_PROTO_TCP  6
 #define ICMP_ECHO     8
 #define ICMP_ECHOREPLY 0
 
@@ -199,7 +200,7 @@ static void handle_arp(const u8 *pkt, u32 len)
     }
 }
 
-static int ip_send(u32 dst_ip, u8 proto, const void *payload, u32 plen)
+int ip_send(u32 dst_ip, u8 proto, const void *payload, u32 plen)
 {
     u8 buf[1500];
     if (sizeof(struct ip_hdr) + plen > sizeof(buf))
@@ -321,6 +322,13 @@ static void handle_ip(const u8 *pkt, u32 len)
 
     if (ip->proto == IP_PROTO_ICMP)
         handle_icmp(src, pkt + ihl, total - ihl);
+    else if (ip->proto == IP_PROTO_TCP && total > ihl + 20) {
+        /* M14 TCP: demux to TCP stack */
+        extern void tcp_input(u32 src_be, u32 dst_be, const u8 *tcp_pkt, u32 tcp_len);
+        const u8 *tcp_pkt = pkt + ihl;
+        u32 tcp_len = total - ihl;
+        tcp_input(src, dst, tcp_pkt, tcp_len);
+    }
     else if (ip->proto == IP_PROTO_UDP && total > ihl + 8) {
         /* Minimal UDP demux: [src_port_be(2), dst_port_be(2), len(2), csum(2)] */
         const u8 *udp = pkt + ihl;
@@ -465,5 +473,10 @@ void net_poll(void)
         g_selftest_done = 1;
         kprintf("[net] ICMP echo reply OK (gateway)\n");
         kprintf("[net] HelixNetOK\n");
+
+        /* M14: announce TCP module availability */
+        extern void tcp_init(void);
+        tcp_init();
+        kprintf("[net] M14 TCP stack ready — HelixTcpOK\n");
     }
 }

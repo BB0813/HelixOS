@@ -52,7 +52,7 @@ C_SRCS := \
 	kernel/arch/x86_64/pit.c kernel/arch/x86_64/timer.c \
 	kernel/arch/x86_64/irq.c \
 	kernel/drv/blk_ahci.c kernel/drv/virtio_net.c kernel/drv/e1000.c kernel/drv/fb.c \
-	kernel/net/nic.c kernel/net/net.c kernel/net/udp.c \
+	kernel/net/nic.c kernel/net/net.c kernel/net/udp.c kernel/net/tcp.c \
 	kernel/fs/fat.c kernel/fs/vfs.c kernel/fs/fs.c kernel/fs/ramfs.c kernel/fs/pipe.c \
 	kernel/proc/elf.c kernel/proc/syscall.c kernel/proc/task.c \
 	kernel/proc/signal.c kernel/proc/userland.c kernel/proc/exec.c
@@ -221,8 +221,9 @@ smoke-net: esp
 	@grep -a -F -q "HelixNetOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixNetOK; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "ICMP echo reply" $(ROOT)/serial.log || { echo SMOKE-NET FAIL ICMP; exit 1; }
 	@grep -a -F -q "user_udp_ok" $(ROOT)/serial.log || { echo SMOKE-NET FAIL user_udp_ok; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "HelixTcpOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpOK; cat $(ROOT)/serial.log; exit 1; }
 	@echo SMOKE-NET OK
-	@grep -a -E 'net|arp|icmp|udp|HelixNet|host_udp' $(ROOT)/serial.log | head -40
+	@grep -a -E 'net|arp|icmp|udp|tcp|HelixNet|host_udp' $(ROOT)/serial.log | head -40
 
 smoke-fb: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
