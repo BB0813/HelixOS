@@ -4,6 +4,7 @@
 
 #define TASK_MAX        8
 #define TASK_NAME_MAX   16
+#define TASK_MAX_PAGES  2048  /* max tracked user pages per task (8 MiB) */
 
 enum task_state {
     TASK_UNUSED = 0,
@@ -35,6 +36,8 @@ struct task {
     struct vfs_file *fds[16];
     u64              brk_start;   /* end of data segment */
     u64              brk_curr;    /* current program break */
+    u64              user_pages[TASK_MAX_PAGES]; /* tracked user page phys addrs */
+    int              user_page_count;
 };
 
 void          task_init(void);
@@ -48,6 +51,11 @@ void          task_start_user(void);
 void          task_set_exit_all_hook(void (*hook)(void));
 int           task_count_alive(void);
 void          task_dump(void);
+/* Track a user page allocation for fork/exec cleanup. */
+void          task_track_user_page(struct task *t, u64 vaddr, u64 phys);
+struct task  *task_fork(struct task *parent);
+/* Free all tracked user pages (called on exec/exit). */
+void          task_free_user_pages(struct task *t);
 
 /* Called from syscall path when current task must resume another. */
 void          sched_switch_to(struct task *next);

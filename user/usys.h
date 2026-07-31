@@ -1,13 +1,15 @@
 /* HelixOS userland helpers — freestanding, no libc */
 #pragma once
 
-#define SYS_read   0
-#define SYS_write  1
-#define SYS_open   2
-#define SYS_close  3
-#define SYS_yield  24
-#define SYS_exit   60
-#define SYS_uname  63
+#define SYS_read    0
+#define SYS_write   1
+#define SYS_open    2
+#define SYS_close   3
+#define SYS_yield   24
+#define SYS_exit    60
+#define SYS_uname   63
+#define SYS_fork    57
+#define SYS_execve  59
 
 static inline long usyscall(long nr, long a0, long a1, long a2)
 {
@@ -35,6 +37,16 @@ static inline void sys_exit(int code)
     usyscall(SYS_exit, code, 0, 0);
     for (;;)
         ;
+}
+
+static inline long sys_fork(void)
+{
+    return usyscall(SYS_fork, 0, 0, 0);
+}
+
+static inline long sys_execve(const char *path, char *const argv[], char *const envp[])
+{
+    return usyscall(SYS_execve, (long)path, (long)argv, (long)envp);
 }
 
 static inline unsigned long ustrlen(const char *s)

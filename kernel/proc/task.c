@@ -7,6 +7,8 @@
 #include "helix/string.h"
 #include "helix/panic.h"
 #include "helix/cpuio.h"
+#include "helix/vmm.h"
+#include "helix/paging.h"
 
 extern u64 g_syscall_kstack;
 extern void user_enter_asm(u64 entry, u64 user_rsp);
@@ -194,4 +196,80 @@ void sched_switch_to(struct task *next)
     g_current = next;
     g_syscall_kstack = next->kernel_stack_top;
     gdt_set_tss_rsp0(next->kernel_stack_top);
+}
+
+void task_track_user_page(struct task *t, u64 vaddr, u64 phys)
+{
+    if (!t || t->user_page_count >= TASK_MAX_PAGES)
+        return;
+    t->user_pages[t->user_page_count++] = phys;
+    (void)vaddr; /* vaddr stored for future COW/debug */
+}
+
+void task_free_user_pages(struct task *t)
+{
+    if (!t)
+        return;
+    for (int i = 0; i < t->user_page_count; i++) {
+        if (t->user_pages[i])
+            pmm_free_page(t->user_pages[i]);
+    }
+    t->user_page_count = 0;
+}
+
+struct task *task_fork(struct task *parent)
+{
+    if (!parent)
+        return 0;
+    struct task *child = alloc_slot();
+    if (!child)
+        return 0;
+
+    /* Copy task struct (name, regs, etc.) */
+    memcpy(child, parent, sizeof(*child));
+    child->pid = g_next_pid++;
+    child->state = TASK_READY;
+    child->exit_code = 0;
+    child->user_page_count = 0; /* will be populated by vmm_copy */
+    memset(child->user_pages, 0, sizeof(child->user_pages));
+
+    /* Kernel stack: allocate new, copy parent's kernel stack content */
+    u64 kphys = pmm_alloc_page();
+    if (!kphys) {
+        child->state = TASK_UNUSED;
+        return 0;
+    }
+    memcpy((void *)(uintptr_t)kphys,
+           (const void *)(uintptr_t)parent->kernel_stack, PAGE_SIZE);
+    child->kernel_stack = kphys;
+    child->kernel_stack_top = kphys + PAGE_SIZE;
+
+    /* Duplicate file descriptors (shallow: same vfs_file pointers) */
+    /* For a proper fork we would refcount; here we just share the pointers */
+    for (int i = 0; i < 16; i++) {
+        if (child->fds[i]) {
+            /* Placeholder: increment refcount when VFS supports it */
+        }
+    }
+
+    /* Duplicate user page tables: child gets own PML4 with copied user pages */
+    u64 parent_pml4 = paging_cr3();
+    u64 child_pml4 = vmm_copy_user_page_tables(parent_pml4, child);
+    if (!child_pml4) {
+        pmm_free_page(kphys);
+        child->state = TASK_UNUSED;
+        return 0;
+    }
+
+    /* Load child's CR3, flush TLB, then restore parent's CR3 */
+    __asm__ volatile(
+        "mov %0, %%cr3\n\t"
+        "mov %1, %%cr3\n\t"
+        : : "r"(child_pml4), "r"(parent_pml4) : "memory"
+    );
+
+    kprintf("[task] fork pid=%d -> child pid=%d (rip=0x%llx)\n",
+            parent->pid, child->pid,
+            (unsigned long long)child->regs.rip);
+    return child;
 }

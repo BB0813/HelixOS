@@ -50,6 +50,8 @@
 #define SYS_listen          50
 #define SYS_setsockopt      54
 #define SYS_getsockopt      55
+#define SYS_fork            57
+#define SYS_execve          59
 
 void     syscall_init(void);
 int      user_ptr_ok(const void *ptr, u64 len);

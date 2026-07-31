@@ -16,6 +16,7 @@
 #define ENOSPC      28
 #define ERANGE      34
 #define ENOSYS      38
+#define ENOEXEC     8
 #define EADDRINUSE  98
 #define ENOTSOCK    88
 #define EOPNOTSUPP  95

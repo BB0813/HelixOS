@@ -13,6 +13,7 @@
 #define SYS_sendto      44
 #define SYS_recvfrom    45
 #define SYS_bind        49
+#define SYS_fork        57
 
 /* Linux open flags */
 #define O_RDONLY 0
@@ -268,6 +269,22 @@ static void cmd_smoke(void)
 done_sock:
         usys(SYS_close, sfd, 0, 0);
     }
+    /* M10: fork self-test */
+    {
+        long pid = sys_fork();
+        if (pid == 0) {
+            /* child */
+            xwrite("ForkChildOK\n");
+            sys_exit(0);
+        } else if (pid > 0) {
+            /* parent: yield to let child run, then print */
+            sys_yield();
+            xwrite("ForkParentOK\n");
+        } else {
+            xwrite("fork_fail\n");
+        }
+    }
+
 done:
     xwrite("helixbox_smoke_done\n");
 }

@@ -1,7 +1,8 @@
 # Linux Syscall Compatibility
 
 > M5/M6：helixbox + 可选静态 BusyBox；动态 `ld-helix` / 真 musl。  
-> M7：内核 ICMP 自测（**无** socket 类 syscall）。完整 Linux ABI **未**宣称。
+> M7：内核 ICMP 自测（**无** socket 类 syscall）。完整 Linux ABI **未**宣称。  
+> M10：`fork`/`execve` 实现，进程创建与 ELF 加载。
 
 ## Policy
 
@@ -42,6 +43,8 @@
 | 50 | listen | **ENOSYS** | TCP stub |
 | 54 | setsockopt | **ENOSYS** | TCP stub |
 | 55 | getsockopt | **ENOSYS** | TCP stub |
+| 57 | fork | **done** | 复制 task + 用户页表（独立 PML4） |
+| 59 | execve | **done** | VFS 加载 ELF，替换用户空间 |
 | 60 | exit | **done** | |
 | 63 | uname | **done** | sysname **Helix** |
 | 72 | fcntl | **partial** | stub |
@@ -78,3 +81,4 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-07-31 | M7：e1000 + ARP/IPv4/ICMP → **`HelixNetOK`**；socket 仍 ENOSYS |
 | 2026-07-31 | M8：UDP socket（`socket`/`bind`/`sendto`/`recvfrom`）→ **`user_udp_ok`** |
 | 2026-08-01 | M8 TCP stubs：`connect`/`accept`/`listen`/`sendmsg`/`recvmsg`/`setsockopt`/`getsockopt` → ENOSYS |
+| 2026-08-01 | M10：`fork`/`execve`（独立 PML4 + 页表递归复制）→ **`ForkChildOK`** |

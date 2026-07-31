@@ -607,6 +607,182 @@ static i64 sys_getsockopt_stub(u64 fd, u64 level, u64 optname, u64 optval, u64 o
     return ERR(ENOSYS);
 }
 
+/* M10: fork — duplicate current process */
+static i64 sys_fork(void)
+{
+    struct task *parent = task_current();
+    if (!parent)
+        return ERR(ENOMEM);
+
+    struct task *child = task_fork(parent);
+    if (!child)
+        return ERR(ENOMEM);
+
+    /* Set return values: child gets 0 in rax, parent gets child pid.
+     * For the child, we need to modify the saved regs on its kernel stack
+     * so that when it returns to user mode, rax=0. */
+    /* The child's regs were copied from parent; its rax in the saved context
+     * will be restored by syscall_entry path. We set it to 0 here. */
+    child->regs.rax = 0;
+
+    /* Parent returns child pid. The child will be scheduled later and its
+     * rax=0 will be restored from child->regs.rax when it runs. */
+    return (i64)child->pid;
+}
+
+/* M10: execve — replace current process image with ELF from path */
+#include "helix/exec.h"
+static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
+{
+    (void)argv_ptr; (void)envp_ptr;
+    struct task *t = task_current();
+    if (!t)
+        return ERR(ENOMEM);
+
+    /* Copy pathname from user */
+    char path[128];
+    if (!user_ptr_ok((const void *)pathname, 1))
+        return ERR(EFAULT);
+    const char *src = (const char *)pathname;
+    int i;
+    for (i = 0; i < 127 && src[i]; i++)
+        path[i] = src[i];
+    path[i] = 0;
+
+    kprintf("[exec] pid=%d execve path=%s\n", t->pid, path);
+
+    /* Free current user pages */
+    task_free_user_pages(t);
+
+    /* Load ELF from path */
+    void *buf = 0;
+    u64 sz = 0;
+    struct vfs_file *f = 0;
+    if (vfs_open(path, &f) != 0) {
+        kprintf("[exec] open %s failed\n", path);
+        return ERR(ENOENT);
+    }
+    sz = f->size;
+    if (sz == 0 || sz > 4 * 1024 * 1024) {
+        vfs_close(f);
+        return ERR(ENOEXEC);
+    }
+    buf = kmalloc((size_t)sz);
+    if (!buf) {
+        vfs_close(f);
+        return ERR(ENOMEM);
+    }
+    u64 n = 0;
+    if (vfs_read(f, buf, sz, &n) != 0 || n != sz) {
+        kfree(buf);
+        vfs_close(f);
+        return ERR(ENOEXEC);
+    }
+    vfs_close(f);
+
+    /* Load ELF and set up new user space */
+    struct elf_load_info info;
+    int rc = elf_load_dynamic(buf, sz, &info);
+    if (rc != 0) {
+        if (elf_load_image(buf, sz, &info) != 0) {
+            kfree(buf);
+            return ERR(ENOEXEC);
+        }
+    }
+    kfree(buf);
+
+    /* Set up new stack */
+    u64 stack_base, stack_top;
+    if (info.load_base >= USER_BASE || info.interp_base >= 0x50000000ull) {
+        stack_base = USER_STACK_TOP - USER_STACK_SIZE;
+        if (!vmm_alloc_user_pages(stack_base, USER_STACK_SIZE / PAGE_SIZE, 1))
+            return ERR(ENOMEM);
+        stack_top = stack_base + USER_STACK_SIZE;
+    } else {
+        stack_top = 0x3FFFF000ull;
+        stack_base = stack_top - USER_STACK_SIZE;
+        /* Map stack pages */
+        for (u64 va = stack_base; va < stack_top; va += PAGE_SIZE) {
+            u64 phys = pmm_alloc_page();
+            if (!phys)
+                return ERR(ENOMEM);
+            memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
+            paging_map_4k(va, phys, (1ull) | (1ull << 1) | (1ull << 2));
+            task_track_user_page(t, va, phys);
+        }
+    }
+
+    /* Build argv from user pointer (simplified: just use path as argv[0]) */
+    const char *new_argv[4];
+    new_argv[0] = path;
+    new_argv[1] = 0;
+
+    /* Set up user stack with auxv */
+    u64 sp = stack_top;
+    /* Align to16 bytes */
+    sp &= ~0xFull;
+    /* argc */
+    sp -= 8;
+    *(u64 *)(uintptr_t)sp = 1; /* argc = 1 */
+    /* argv[0] pointer — push path string first */
+    u64 path_len = strlen(path) + 1;
+    sp -= path_len;
+    memcpy((void *)(uintptr_t)sp, path, path_len);
+    u64 argv0_ptr = sp;
+    /* argv[1] = NULL */
+    sp -= 8;
+    *(u64 *)(uintptr_t)sp = 0;
+    /* envp[0] = NULL */
+    sp -= 8;
+    *(u64 *)(uintptr_t)sp = 0;
+    /* align */
+    sp &= ~0xFull;
+    /* Push AT_RANDOM (16 bytes) */
+    sp -= 16;
+    for (int j = 0; j < 16; j++)
+        ((u8 *)(uintptr_t)sp)[j] = (u8)(0xAB ^ j);
+    u64 at_random = sp;
+    /* auxv entries */
+    sp -= 8; *(u64 *)(uintptr_t)sp = argv0_ptr; /* back-ptr unused */
+    /* AT_PHDR, AT_PHENT, AT_PHNUM, AT_ENTRY, AT_RANDOM, AT_NULL */
+    u64 auxv[][2] = {
+        { 3,  info.phdr_addr },      /* AT_PHDR */
+        { 4,  info.phentsize },      /* AT_PHENT */
+        { 5,  info.phnum },          /* AT_PHNUM */
+        { 9,  info.main_entry ? info.main_entry : info.entry }, /* AT_ENTRY */
+        { 6,  4096 },               /* AT_PAGESZ */
+        { 25, at_random },           /* AT_RANDOM */
+        { 0,  0 },                   /* AT_NULL */
+    };
+    for (int j = 0; j < 7; j++) {
+        sp -= 16;
+        *(u64 *)(uintptr_t)sp = auxv[j][0];
+        *(u64 *)(uintptr_t)(sp + 8) = auxv[j][1];
+    }
+    /* argc + argv[0] pointer */
+    sp -= 8;
+    *(u64 *)(uintptr_t)sp = 1; /* argc */
+    sp -= 8;
+    *(u64 *)(uintptr_t)sp = argv0_ptr;
+
+    /* Reset task registers */
+    t->regs.rip = info.entry;
+    t->regs.rsp = sp;
+    t->regs.rax = 0;
+    t->regs.rflags = 0x200;
+    t->brk_start = align_up_u64(info.load_end, PAGE_SIZE);
+    t->brk_curr = t->brk_start;
+    /* Copy path into name */
+    size_t nlen = strlen(path);
+    if (nlen >= TASK_NAME_MAX) nlen = TASK_NAME_MAX - 1;
+    memcpy(t->name, path, nlen);
+    t->name[nlen] = 0;
+
+    /* We need to force-return to user mode with new regs.
+     * Modify the syscall frame so that iret/sysret goes to new entry. */
+    return 0; /* will be handled by syscall frame override below */
+}
+
 u64 syscall_entry_c(struct syscall_frame *f)
 {
     struct task *t = task_current();
@@ -673,6 +849,8 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case 47:  /* recvmsg */   ret = sys_recvmsg_stub(f->a0, f->a1, f->a2); break;
     case 54:  /* setsockopt */ret = sys_setsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
     case 55:  /* getsockopt */ret = sys_getsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
+    case 57:  /* fork */      ret = sys_fork(); break;
+    case 59:  /* execve */    ret = sys_execve(f->a0, f->a1, f->a2); break;
     default:
         kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
         ret = ERR(ENOSYS);

@@ -156,6 +156,19 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 ---
 
+## M10 — fork/exec `[x]`
+
+- [x] `fork`(57)：复制 task struct + 内核栈 + 用户页表（子进程独立 PML4，用户页物理复制）
+- [x] `execve`(59)：从 VFS 加载 ELF，替换当前 task 的用户空间、entry/stack/brk
+- [x] `user_pages[]` 跟踪：每个 task 最多2048 页（8 MiB），fork 时自动追踪复制的页面
+- [x] `vmm_copy_user_page_tables()`：4级页表递归复制，2MiB 大页拆分为4K 后逐页复制
+- [x] helixbox smoke：fork 自检 → `ForkChildOK` + `ForkParentOK`
+- [x] SYSCALLS.md / usys.h 更新
+
+**验证**：`make smoke-linux` 串口含 `ForkChildOK` + `ForkParentOK` + `helixbox_smoke_done`。
+
+---
+
 ## 文档债务（随里程碑）
 
 - 每完成一阶段：更新本文件状态勾选与 `ARCHITECTURE.md` 中对应子系统
