@@ -447,7 +447,13 @@ static i64 sys_getcwd(u64 buf, u64 size)
 static i64 sys_socket(u64 domain, u64 type, u64 protocol)
 {
     (void)protocol;
-    if (domain != 2 /* AF_INET */ || type != 2 /* SOCK_DGRAM */)
+    if (domain != 2 /* AF_INET */)
+        return ERR(EOPNOTSUPP);
+    if (type == 1 /* SOCK_STREAM */) {
+        /* TCP stub — not implemented yet */
+        return ERR(ENOSYS);
+    }
+    if (type != 2 /* SOCK_DGRAM */)
         return ERR(EOPNOTSUPP);
     struct helix_sock *s = net_sock_alloc_udp();
     if (!s)
@@ -558,6 +564,49 @@ static i64 sys_getrandom(u64 buf, u64 len, u64 flags)
     return (i64)len;
 }
 
+/* TCP stubs — return ENOSYS until TCP stack is implemented */
+static i64 sys_connect_stub(u64 fd, u64 addr, u64 addrlen)
+{
+    (void)fd; (void)addr; (void)addrlen;
+    return ERR(ENOSYS);
+}
+
+static i64 sys_accept_stub(u64 fd, u64 addr, u64 addrlen)
+{
+    (void)fd; (void)addr; (void)addrlen;
+    return ERR(ENOSYS);
+}
+
+static i64 sys_listen_stub(u64 fd, u64 backlog)
+{
+    (void)fd; (void)backlog;
+    return ERR(ENOSYS);
+}
+
+static i64 sys_sendmsg_stub(u64 fd, u64 msg, u64 flags)
+{
+    (void)fd; (void)msg; (void)flags;
+    return ERR(ENOSYS);
+}
+
+static i64 sys_recvmsg_stub(u64 fd, u64 msg, u64 flags)
+{
+    (void)fd; (void)msg; (void)flags;
+    return ERR(ENOSYS);
+}
+
+static i64 sys_setsockopt_stub(u64 fd, u64 level, u64 optname, u64 optval, u64 optlen)
+{
+    (void)fd; (void)level; (void)optname; (void)optval; (void)optlen;
+    return ERR(ENOSYS);
+}
+
+static i64 sys_getsockopt_stub(u64 fd, u64 level, u64 optname, u64 optval, u64 optlen)
+{
+    (void)fd; (void)level; (void)optname; (void)optval; (void)optlen;
+    return ERR(ENOSYS);
+}
+
 u64 syscall_entry_c(struct syscall_frame *f)
 {
     struct task *t = task_current();
@@ -617,6 +666,13 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case 45:  /* recvfrom */ ret = sys_recvfrom(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
     case 49:  /* bind */     ret = sys_bind(f->a0, f->a1, f->a2); break;
     case 318: /* getrandom */ret = sys_getrandom(f->a0, f->a1, f->a2); break;
+    case 42:  /* connect */   ret = sys_connect_stub(f->a0, f->a1, f->a2); break;
+    case 43:  /* accept */    ret = sys_accept_stub(f->a0, f->a1, f->a2); break;
+    case 50:  /* listen */    ret = sys_listen_stub(f->a0, f->a1); break;
+    case 46:  /* sendmsg */   ret = sys_sendmsg_stub(f->a0, f->a1, f->a2); break;
+    case 47:  /* recvmsg */   ret = sys_recvmsg_stub(f->a0, f->a1, f->a2); break;
+    case 54:  /* setsockopt */ret = sys_setsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
+    case 55:  /* getsockopt */ret = sys_getsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
     default:
         kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
         ret = ERR(ENOSYS);

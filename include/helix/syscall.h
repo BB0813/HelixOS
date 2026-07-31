@@ -43,6 +43,13 @@
 #define SYS_munmap          11
 #define SYS_rt_sigaction    13
 #define SYS_rt_sigprocmask  14
+#define SYS_connect         42
+#define SYS_accept          43
+#define SYS_sendmsg         46
+#define SYS_recvmsg         47
+#define SYS_listen          50
+#define SYS_setsockopt      54
+#define SYS_getsockopt      55
 
 void     syscall_init(void);
 int      user_ptr_ok(const void *ptr, u64 len);

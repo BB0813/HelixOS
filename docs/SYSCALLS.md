@@ -31,10 +31,17 @@
 | 24 | sched_yield | **done** | 协作 |
 | 33 | dup2 | **done** | |
 | 39 | getpid | **done** | |
-| 41 | socket | **done** | AF_INET / SOCK_DGRAM；UDP only |
+| 41 | socket | **done** | AF_INET / SOCK_DGRAM (UDP)；SOCK_STREAM → ENOSYS |
+| 42 | connect | **ENOSYS** | TCP stub |
+| 43 | accept | **ENOSYS** | TCP stub |
 | 44 | sendto | **done** | UDP 发包；本地回环 |
 | 45 | recvfrom | **done** | UDP 收包（非阻塞） |
+| 46 | sendmsg | **ENOSYS** | TCP stub |
+| 47 | recvmsg | **ENOSYS** | TCP stub |
 | 49 | bind | **done** | UDP 端口绑定 |
+| 50 | listen | **ENOSYS** | TCP stub |
+| 54 | setsockopt | **ENOSYS** | TCP stub |
+| 55 | getsockopt | **ENOSYS** | TCP stub |
 | 60 | exit | **done** | |
 | 63 | uname | **done** | sysname **Helix** |
 | 72 | fcntl | **partial** | stub |
@@ -46,13 +53,6 @@
 | 257 | openat | **done** | 重定向至 open |
 | 262 | newfstatat | **done** | 重定向至 fstatat |
 | 318 | getrandom | **done** | 软实现（ticks） |
-| 41 | socket | **done** | AF_INET/SOCK_DGRAM；UDP only |
-| 44 | sendto | **done** | UDP 发包 |
-| 45 | recvfrom | **done** | UDP 收包（非阻塞） |
-| 49 | bind | **done** | UDP 端口绑定 |
-| 56 | connect | **ENOSYS** | TCP 待 M9 |
-| 50 | listen | **ENOSYS** | |
-| 43 | accept | **ENOSYS** | |
 
 Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 
@@ -77,3 +77,4 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-07-31 | **真 musl** `ld-musl` + PIE hello → **`HelloMuslDynOK`**（`make smoke-musl`） |
 | 2026-07-31 | M7：e1000 + ARP/IPv4/ICMP → **`HelixNetOK`**；socket 仍 ENOSYS |
 | 2026-07-31 | M8：UDP socket（`socket`/`bind`/`sendto`/`recvfrom`）→ **`user_udp_ok`** |
+| 2026-08-01 | M8 TCP stubs：`connect`/`accept`/`listen`/`sendmsg`/`recvmsg`/`setsockopt`/`getsockopt` → ENOSYS |

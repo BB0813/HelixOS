@@ -120,7 +120,7 @@ Goal 模式提示词（可直接粘贴）：[`docs/GOAL_M8.md`](GOAL_M8.md)
 - [x] `helixbox` applet：UDP 本地回环自检（sendto → recvfrom → `user_udp_ok`）
 - [x] `getrandom` syscall（helixbox/BusyBox 兼容）
 - [x] socket FD 通过 VFS 安装（`is_socket` 标志 + kmalloc wrapper）
-- [ ] TCP stub（`connect`/`accept`/`listen` → ENOSYS）
+- [x] TCP stub（`connect`/`accept`/`listen`/`sendmsg`/`recvmsg`/`setsockopt`/`getsockopt` → ENOSYS）
 - [ ] 宿主机 ↔ guest UDP ping
 
 **验证**：`make smoke-net`（含 `HelixNetOK` + **`user_udp_ok`**）。
