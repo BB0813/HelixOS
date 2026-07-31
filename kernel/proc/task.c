@@ -74,6 +74,7 @@ struct task *task_create(const char *name, u64 entry, u64 user_sp)
 
     memset(t, 0, sizeof(*t));
     t->pid = g_next_pid++;
+    t->parent = 0;
     t->state = TASK_READY;
     t->exit_code = 0;
     if (name) {
@@ -131,6 +132,29 @@ void task_exit_current(int code)
     t->exit_code = code;
     t->state = TASK_ZOMBIE;
     kprintf("[task] zombie pid=%d code=%d\n", t->pid, code);
+    /* Free inherited FDs on exit (zombie's fds are not task_current's).
+     * Console stdio files (0–2) are static & shared — never free them.
+     * But a dup2'd pipe/file on fd 0–2 must be released normally. */
+    for (int i = 0; i < 16; i++) {
+        struct vfs_file *f = t->fds[i];
+        if (!f)
+            continue;
+        if (f->is_console)
+            continue; /* static, never free */
+        t->fds[i] = 0;
+        f->refcount--;
+        if (f->refcount > 0)
+            continue;
+        if (f->is_socket) {
+            extern void net_sock_free(void *s);
+            net_sock_free(f->fs_priv);
+            extern void kfree(void *ptr);
+            kfree(f);
+        } else {
+            extern int vfs_close(struct vfs_file *f);
+            vfs_close(f);
+        }
+    }
 
     struct task *n = pick_next(t);
     if (!n) {
@@ -228,6 +252,7 @@ struct task *task_fork(struct task *parent)
     /* Copy task struct (name, regs, etc.) */
     memcpy(child, parent, sizeof(*child));
     child->pid = g_next_pid++;
+    child->parent = parent;
     child->state = TASK_READY;
     child->exit_code = 0;
     child->user_page_count = 0; /* will be populated by vmm_copy */
@@ -244,11 +269,12 @@ struct task *task_fork(struct task *parent)
     child->kernel_stack = kphys;
     child->kernel_stack_top = kphys + PAGE_SIZE;
 
-    /* Duplicate file descriptors (shallow: same vfs_file pointers) */
-    /* For a proper fork we would refcount; here we just share the pointers */
+    /* Duplicate file descriptors: share pointers, bump refcount so child
+     * and parent each own their slot. */
     for (int i = 0; i < 16; i++) {
         if (child->fds[i]) {
-            /* Placeholder: increment refcount when VFS supports it */
+            extern void fd_hold(struct vfs_file *f);
+            fd_hold(child->fds[i]);
         }
     }
 
@@ -272,4 +298,107 @@ struct task *task_fork(struct task *parent)
             parent->pid, child->pid,
             (unsigned long long)child->regs.rip);
     return child;
+}
+
+struct task *task_find_child(struct task *parent, int pid)
+{
+    if (!parent)
+        return 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        struct task *c = &g_tasks[i];
+        if (c->state == TASK_UNUSED || c->parent != parent)
+            continue;
+        if (pid == 0 || c->pid == pid)
+            return c;
+    }
+    return 0;
+}
+
+int task_child_exited(struct task *parent, int pid)
+{
+    struct task *c = task_find_child(parent, pid);
+    if (!c)
+        return -1; /* no such child */
+    return c->state == TASK_ZOMBIE ? 1 : 0;
+}
+
+void task_reap(struct task *t)
+{
+    if (!t)
+        return;
+    /* User pages + kernel stack already freed on exit.
+     * FDs were closed in task_exit_current. */
+    task_free_user_pages(t);
+    if (t->kernel_stack)
+        pmm_free_page(t->kernel_stack);
+    t->kernel_stack = 0;
+    /* Close any remaining FDs (should already be done in exit path). */
+    for (int i = 0; i < 16; i++) {
+        struct vfs_file *f = t->fds[i];
+        if (!f || f->is_console)
+            continue;
+        t->fds[i] = 0;
+        f->refcount--;
+        if (f->refcount > 0)
+            continue;
+        if (f->is_socket) {
+            extern void net_sock_free(void *s);
+            net_sock_free(f->fs_priv);
+            extern void kfree(void *ptr);
+            kfree(f);
+        } else {
+            extern int vfs_close(struct vfs_file *f);
+            vfs_close(f);
+        }
+    }
+    t->state = TASK_UNUSED;
+    kprintf("[task] reap pid=%d\n", t->pid);
+}
+
+int task_getpid(void)
+{
+    struct task *t = task_current();
+    return t ? t->pid : 0;
+}
+
+int task_wait(int want, int *out_status, int options)
+{
+    (void)options; /* WNOHANG handled by caller polling */
+    struct task *parent = task_current();
+    if (!parent)
+        return -1;
+
+    if (want < -1)
+        want = -want;
+    else if (want < 0)
+        want = 0; /* -1 = any child */
+
+    int alive = 0;
+    struct task *victim = 0;
+    for (int i = 0; i < TASK_MAX; i++) {
+        struct task *c = &g_tasks[i];
+        if (c->state == TASK_UNUSED || c->parent != parent)
+            continue;
+        if (want > 0 && c->pid != want)
+            continue;
+        if (c->state == TASK_ZOMBIE) {
+            victim = c;
+            break;
+        }
+        alive = 1;
+    }
+    if (victim) {
+        int code = victim->exit_code;
+        int pid = victim->pid;
+        if (out_status)
+            *out_status = (code & 0xFF) << 8;
+        task_reap(victim);
+        return pid;
+    }
+    if (!alive)
+        return -1; /* ECHILD */
+    /* Child alive but not a zombie yet. The scheduler only switches tasks
+     * at the syscall return path, so we must NOT block here — return 0 and
+     * let the caller (msh) poll with yield(). */
+    return 0;
 }

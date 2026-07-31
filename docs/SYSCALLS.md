@@ -44,12 +44,14 @@
 | 54 | setsockopt | **ENOSYS** | TCP stub |
 | 55 | getsockopt | **ENOSYS** | TCP stub |
 | 57 | fork | **done** | 复制 task + 用户页表（独立 PML4） |
-| 59 | execve | **done** | VFS 加载 ELF，替换用户空间 |
-| 60 | exit | **done** | |
+| 59 | execve | **done** | VFS 加载 ELF，替换用户空间；argv 支持 |
+| 60 | exit | **done** | 关闭继承 FD（除 console） |
+| 61 | wait4 | **done** | 非阻塞轮询；`(code&0xFF)<<8`；reap zombie |
 | 63 | uname | **done** | sysname **Helix** |
 | 72 | fcntl | **partial** | stub |
 | 79 | getcwd | **done** | 恒 `"/"` |
 | 83 | mkdir | **done** | **`/tmp/...` 与 FAT 根 8.3** |
+| 22 | pipe | **done** | 环形缓冲；EAGAIN 非阻塞 |
 | 158 | arch_prctl | **partial** | `ARCH_SET_FS` / `GET_FS`（MSR） |
 | 217 | getdents64 | **done** | FAT 根或 /tmp |
 | 231 | exit_group | **done** | |
@@ -82,3 +84,4 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-07-31 | M8：UDP socket（`socket`/`bind`/`sendto`/`recvfrom`）→ **`user_udp_ok`** |
 | 2026-08-01 | M8 TCP stubs：`connect`/`accept`/`listen`/`sendmsg`/`recvmsg`/`setsockopt`/`getsockopt` → ENOSYS |
 | 2026-08-01 | M10：`fork`/`execve`（独立 PML4 + 页表递归复制）→ **`ForkChildOK`** |
+| 2026-08-01 | M11：`wait4`/`pipe`/`dup2` refcount + syscall 全寄存器切换 → **`PipeOK`**/**`WaitOK`**；**msh** shell → **`HelixMshOK`** |

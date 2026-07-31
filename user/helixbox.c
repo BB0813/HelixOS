@@ -15,6 +15,12 @@
 #define SYS_recvfrom    45
 #define SYS_bind        49
 #define SYS_fork        57
+#define SYS_wait4       61
+#define SYS_pipe        22
+#define SYS_dup2        33
+#define SYS_execve      59
+#define SYS_exit        60
+#define WNOHANG          1
 
 /* Linux open flags */
 #define O_RDONLY 0
@@ -285,6 +291,72 @@ done_sock:
             xwrite("fork_fail\n");
         }
     }
+
+    /* M11: pipe + wait4 self-test */
+    {
+        int fds[2];
+        if (usys(SYS_pipe, (long)fds, 0, 0) != 0) {
+            xwrite("pipe_fail\n");
+            goto host_udp;
+        }
+        long pid = sys_fork();
+        if (pid == 0) {
+            /* child: close read end, write to pipe */
+            usys(SYS_close, fds[0], 0, 0);
+            const char *msg = "PipeWriteOK";
+            long n = 0;
+            while (msg[n]) n++;
+            long off = 0;
+            while (off < n) {
+                long w = usys(SYS_write, fds[1], (long)(msg + off), n - off);
+                if (w > 0) {
+                    off += w;
+                } else {
+                    usys(SYS_yield, 0, 0, 0);
+                }
+            }
+            usys(SYS_close, fds[1], 0, 0);
+            sys_exit(7); /* exit code 7 */
+        } else if (pid > 0) {
+            /* parent: close write end, read from pipe (loop on EAGAIN) */
+            usys(SYS_close, fds[1], 0, 0);
+            char rbuf[32];
+            long nr = 0;
+            for (;;) {
+                long r = usys(SYS_read, fds[0], (long)(rbuf + nr), 32 - nr);
+                if (r > 0) {
+                    nr += r;
+                    break; /* small payload arrives in one shot */
+                } else if (r == 0) {
+                    break; /* EOF */
+                } else {
+                    usys(SYS_yield, 0, 0, 0);
+                }
+            }
+            int ok = (nr == 11); /* "PipeWriteOK" is 11 bytes */
+            if (ok) {
+                const char *expect = "PipeWriteOK";
+                for (long i = 0; i < nr && i < 11; i++)
+                    if (rbuf[i] != expect[i]) { ok = 0; break; }
+            }
+            usys(SYS_close, fds[0], 0, 0);
+            if (ok)
+                xwrite("PipeOK\n");
+            else
+                xwrite("PipeFAIL\n");
+            /* wait for child, check exit status */
+            int status = 0;
+            long wpid = usys6(SYS_wait4, pid, (long)&status, 0, 0, 0, 0);
+            if (wpid == pid && ((status >> 8) & 0xFF) == 7)
+                xwrite("WaitOK\n");
+            else
+                xwrite("WaitFAIL\n");
+        } else {
+            xwrite("pipe_fork_fail\n");
+        }
+    }
+
+host_udp:
 
     /* M8: host ↔ guest UDP ping via QEMU port forward */
     {

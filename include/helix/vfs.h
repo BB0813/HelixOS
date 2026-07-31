@@ -24,6 +24,7 @@ struct vfs_file {
     int   is_dir;
     int   writable;
     int   is_socket;  /* 1 = fs_priv is helix_sock* */
+    int   refcount;   /* fd slots referencing this file (M11 pipe/shell) */
 };
 
 struct vfs_ops {
@@ -53,6 +54,8 @@ int  fd_install(struct vfs_file *f);
 struct vfs_file *fd_get(int fd);
 int  fd_close(int fd);
 void fd_init_task_stdio(void);
+/* M11: bump f->refcount (used by dup2/fork when sharing a slot). */
+void fd_hold(struct vfs_file *f);
 int  vfs_console_write(struct vfs_file *f, const char *buf, u64 len);
 long vfs_getdents64(struct vfs_file *f, void *buf, u64 len);
 long vfs_fstat(struct vfs_file *f, void *statbuf);

@@ -53,7 +53,7 @@ C_SRCS := \
 	kernel/arch/x86_64/irq.c \
 	kernel/drv/blk_ahci.c kernel/drv/virtio_net.c kernel/drv/e1000.c kernel/drv/fb.c \
 	kernel/net/nic.c kernel/net/net.c kernel/net/udp.c \
-	kernel/fs/fat.c kernel/fs/vfs.c kernel/fs/fs.c kernel/fs/ramfs.c \
+	kernel/fs/fat.c kernel/fs/vfs.c kernel/fs/fs.c kernel/fs/ramfs.c kernel/fs/pipe.c \
 	kernel/proc/elf.c kernel/proc/syscall.c kernel/proc/task.c \
 	kernel/proc/userland.c kernel/proc/exec.c
 
@@ -70,6 +70,7 @@ USER_TASK2_ELF := $(BUILD)/user/task2.elf
 USER_BOX_ELF   := $(BUILD)/user/helixbox.elf
 USER_LD_ELF    := $(BUILD)/user/ld-helix.so
 USER_DYN_ELF   := $(BUILD)/user/hello.dyn
+USER_MSH_ELF   := $(BUILD)/user/msh.elf
 USER_INIT_HDR  := $(GEN)/user_init_elf.h
 USER_TASK2_HDR := $(GEN)/user_task2_elf.h
 
@@ -101,6 +102,8 @@ $(BUILD)/user/ld_helix.o: user/ld_helix.c user/usys.h | dirs
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 $(BUILD)/user/hello_dyn.o: user/hello_dyn.c user/usys.h | dirs
 	$(CC) $(USER_CFLAGS) -c $< -o $@
+$(BUILD)/user/msh.o: user/msh.c user/usys.h | dirs
+	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_INIT_ELF): $(BUILD)/user/init.o user/user_init.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/user_init.ld -o $@ $<
@@ -110,6 +113,8 @@ $(USER_BOX_ELF): $(BUILD)/user/helixbox.o user/helixbox.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/helixbox.ld -o $@ $<
 $(USER_LD_ELF): $(BUILD)/user/ld_helix.o user/ld_helix.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/ld_helix.ld -o $@ $<
+$(USER_MSH_ELF): $(BUILD)/user/msh.o user/msh.ld
+	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/msh.ld -o $@ $<
 
 $(BUILD)/user/hello_dyn.raw: $(BUILD)/user/hello_dyn.o user/hello_dyn.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/hello_dyn.ld -o $@ $<
@@ -124,7 +129,7 @@ $(USER_INIT_HDR): $(USER_INIT_ELF) scripts/bin2hdr.py
 $(USER_TASK2_HDR): $(USER_TASK2_ELF) scripts/bin2hdr.py
 	$(PYTHON) scripts/bin2hdr.py build/user/task2.elf -o include/generated/user_task2_elf.h -n user_task2_elf
 
-user: $(USER_INIT_ELF) $(USER_TASK2_ELF) $(USER_BOX_ELF) $(USER_LD_ELF) $(USER_DYN_ELF) \
+user: $(USER_INIT_ELF) $(USER_TASK2_ELF) $(USER_BOX_ELF) $(USER_LD_ELF) $(USER_DYN_ELF) $(USER_MSH_ELF) \
 	$(USER_INIT_HDR) $(USER_TASK2_HDR)
 
 $(BUILD)/kernel/proc/userland.o: $(USER_INIT_HDR) $(USER_TASK2_HDR)
@@ -184,6 +189,9 @@ smoke-linux: esp
 			grep -a -F -q "$$pat" $(ROOT)/serial.log 2>/dev/null || { echo "SMOKE-LINUX FAIL $$pat"; ok=0; }; \
 		done; \
 		[ "$$ok" = 1 ] && echo "SMOKE-LINUX OK (helixbox)" || { cat $(ROOT)/serial.log; exit 1; }; \
+	fi; \
+	if grep -a -F -q "HelixMshOK" $(ROOT)/serial.log 2>/dev/null; then \
+		echo "SMOKE-LINUX OK (msh pipeline)"; \
 	fi
 
 smoke-musl: esp

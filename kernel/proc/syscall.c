@@ -13,6 +13,7 @@
 #include "helix/vmm.h"
 #include "helix/paging.h"
 #include "helix/net.h"
+#include "helix/pipe.h"
 
 u64 g_syscall_kstack;
 u64 g_syscall_user_rsp;
@@ -20,6 +21,7 @@ u64 g_syscall_user_rsp;
 extern void syscall_entry_asm(void);
 
 struct syscall_frame {
+    u64 r15, r14, r13, r12, rbp, rbx;  /* callee-saved (preserved across switch) */
     u64 nr;
     u64 a0, a1, a2, a3, a4, a5;
     u64 user_rip;
@@ -93,7 +95,10 @@ static i64 sys_read(u64 fd, u64 buf, u64 count)
     if (!f)
         return ERR(EBADF);
     u64 n = 0;
-    if (vfs_read(f, (void *)(uintptr_t)buf, count, &n) != 0)
+    int r = vfs_read(f, (void *)(uintptr_t)buf, count, &n);
+    if (r < 0)
+        return (i64)r; /* -EAGAIN etc. from pipes; vfs_read returns negative errno */
+    if (r > 0)
         return ERR(EIO);
     return (i64)n;
 }
@@ -284,9 +289,13 @@ static i64 sys_dup2(u64 oldfd, u64 newfd)
         return ERR(EBADF);
     if (oldfd == newfd)
         return (i64)newfd;
-    if (tab[newfd] && newfd > 2)
-        vfs_close(tab[newfd]);
-    tab[newfd] = f; /* share pointer; M5 no refcount */
+    if (tab[newfd] && newfd > 2) {
+        tab[newfd]->refcount--;
+        if (tab[newfd]->refcount <= 0)
+            vfs_close(tab[newfd]);
+    }
+    fd_hold(f);
+    tab[newfd] = f;
     return (i64)newfd;
 }
 
@@ -346,7 +355,58 @@ static i64 sys_geteuid(void) { return 0; }
 static i64 sys_getegid(void) { return 0; }
 static i64 sys_setuid(u64 uid) { (void)uid; return 0; }
 static i64 sys_setgid(u64 gid) { (void)gid; return 0; }
-static i64 sys_getppid(void) { return 1; }
+static i64 sys_getppid(void)
+{
+    struct task *t = task_current();
+    return t && t->parent ? t->parent->pid : 1;
+}
+
+/* M11: wait4 — wait for a child; blocks (yields) until it becomes a zombie.
+ * pid: 0 = any child, >0 = specific pid, -1 = any child.
+ * WNOHANG=1: return immediately if no exited child. */
+#define WNOHANG 1
+static i64 sys_wait4(u64 pid, u64 status_ptr, u64 options, u64 rusage)
+{
+    (void)rusage;
+    int status = 0;
+    int r = task_wait((int)pid, &status, (int)options);
+    if (r == -1)
+        return ERR(ECHILD);
+    if (r == 0)
+        return 0; /* WNOHANG, no child ready */
+    if (status_ptr && user_ptr_ok((void *)(uintptr_t)status_ptr, 4))
+        *(u32 *)(uintptr_t)status_ptr = (u32)status;
+    return (i64)r;
+}
+
+/* M11: pipe(2) — create a unidirectional pipe, returns [read_fd, write_fd]. */
+static i64 sys_pipe(u64 pipefd_ptr)
+{
+    if (!user_ptr_ok((void *)(uintptr_t)pipefd_ptr, 8))
+        return ERR(EFAULT);
+    struct helix_pipe *p = helix_pipe_create();
+    if (!p)
+        return ERR(ENOMEM);
+    struct vfs_file *r = helix_pipe_wrap(p, 0); /* read end */
+    struct vfs_file *w = helix_pipe_wrap(p, 1); /* write end */
+    if (!r || !w) {
+        if (r) vfs_close(r);
+        if (w) vfs_close(w);
+        return ERR(ENOMEM);
+    }
+    fd_init_task_stdio();
+    int rf = fd_install(r);
+    int wf = fd_install(w);
+    if (rf < 0 || wf < 0) {
+        if (rf >= 0) fd_close(rf);
+        if (wf >= 0) fd_close(wf);
+        return ERR(ENOSPC);
+    }
+    u32 *fds = (u32 *)(uintptr_t)pipefd_ptr;
+    fds[0] = (u32)rf;
+    fds[1] = (u32)wf;
+    return 0;
+}
 static i64 sys_writev(u64 fd, u64 iov, u64 iovcnt)
 {
     /* Minimal: only support single iovec if buffer is user-ok */
@@ -712,58 +772,42 @@ static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
         }
     }
 
-    /* Build argv from user pointer (simplified: just use path as argv[0]) */
-    const char *new_argv[4];
-    new_argv[0] = path;
-    new_argv[1] = 0;
-
-    /* Set up user stack with auxv */
-    u64 sp = stack_top;
-    /* Align to16 bytes */
-    sp &= ~0xFull;
-    /* argc */
-    sp -= 8;
-    *(u64 *)(uintptr_t)sp = 1; /* argc = 1 */
-    /* argv[0] pointer — push path string first */
-    u64 path_len = strlen(path) + 1;
-    sp -= path_len;
-    memcpy((void *)(uintptr_t)sp, path, path_len);
-    u64 argv0_ptr = sp;
-    /* argv[1] = NULL */
-    sp -= 8;
-    *(u64 *)(uintptr_t)sp = 0;
-    /* envp[0] = NULL */
-    sp -= 8;
-    *(u64 *)(uintptr_t)sp = 0;
-    /* align */
-    sp &= ~0xFull;
-    /* Push AT_RANDOM (16 bytes) */
-    sp -= 16;
-    for (int j = 0; j < 16; j++)
-        ((u8 *)(uintptr_t)sp)[j] = (u8)(0xAB ^ j);
-    u64 at_random = sp;
-    /* auxv entries */
-    sp -= 8; *(u64 *)(uintptr_t)sp = argv0_ptr; /* back-ptr unused */
-    /* AT_PHDR, AT_PHENT, AT_PHNUM, AT_ENTRY, AT_RANDOM, AT_NULL */
-    u64 auxv[][2] = {
-        { 3,  info.phdr_addr },      /* AT_PHDR */
-        { 4,  info.phentsize },      /* AT_PHENT */
-        { 5,  info.phnum },          /* AT_PHNUM */
-        { 9,  info.main_entry ? info.main_entry : info.entry }, /* AT_ENTRY */
-        { 6,  4096 },               /* AT_PAGESZ */
-        { 25, at_random },           /* AT_RANDOM */
-        { 0,  0 },                   /* AT_NULL */
-    };
-    for (int j = 0; j < 7; j++) {
-        sp -= 16;
-        *(u64 *)(uintptr_t)sp = auxv[j][0];
-        *(u64 *)(uintptr_t)(sp + 8) = auxv[j][1];
+    /* Build argv from user pointer (copy argv strings from user space) */
+    char *argv[16];
+    int argc = 0;
+    argv[0] = path; /* argv[0] = program path (like execve spec) */
+    argc = 1;
+    if (argv_ptr) {
+        const u64 *uargv = (const u64 *)(uintptr_t)argv_ptr;
+        for (int i = 1; i < 15; i++) {
+            u64 p = uargv[i - 1]; /* argv[i] (argv[0] = path already) */
+            if (p == 0)
+                break;
+            if (!user_ptr_ok((const void *)p, 1))
+                break;
+            char *dst = argv[i] = kmalloc(128);
+            if (!dst)
+                break;
+            int j;
+            for (j = 0; j < 127; j++) {
+                char c = ((const char *)p)[j];
+                dst[j] = c;
+                if (c == 0)
+                    break;
+            }
+            dst[j] = 0;
+            argc = i + 1;
+        }
     }
-    /* argc + argv[0] pointer */
-    sp -= 8;
-    *(u64 *)(uintptr_t)sp = 1; /* argc */
-    sp -= 8;
-    *(u64 *)(uintptr_t)sp = argv0_ptr;
+    argv[argc] = 0;
+
+    /* Set up user stack with auxv + argv */
+    u64 sp = setup_user_stack(stack_top, (const char *const *)argv, &info, path);
+
+    /* Free argv copies */
+    for (int i = 1; i < argc; i++)
+        if (argv[i] && argv[i] != path)
+            kfree(argv[i]);
 
     /* Reset task registers */
     t->regs.rip = info.entry;
@@ -797,6 +841,13 @@ u64 syscall_entry_c(struct syscall_frame *f)
         t->regs.r10 = f->a3;
         t->regs.r8  = f->a4;
         t->regs.r9  = f->a5;
+        /* Preserve callee-saved user registers across a task switch. */
+        t->regs.r15 = f->r15;
+        t->regs.r14 = f->r14;
+        t->regs.r13 = f->r13;
+        t->regs.r12 = f->r12;
+        t->regs.rbp = f->rbp;
+        t->regs.rbx = f->rbx;
     }
 
     i64 ret = ERR(ENOSYS);
@@ -851,6 +902,8 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case 55:  /* getsockopt */ret = sys_getsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
     case 57:  /* fork */      ret = sys_fork(); break;
     case 59:  /* execve */    ret = sys_execve(f->a0, f->a1, f->a2); break;
+    case SYS_wait4:           ret = sys_wait4(f->a0, f->a1, f->a2, f->a3); break;
+    case SYS_pipe:            ret = sys_pipe(f->a0); break;
     default:
         kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
         ret = ERR(ENOSYS);
@@ -865,6 +918,20 @@ u64 syscall_entry_c(struct syscall_frame *f)
         f->user_rip = t->regs.rip;
         f->user_rflags = t->regs.rflags | 0x200;
         f->user_rsp = t->regs.rsp;
+        /* Restore ALL registers of the resumed task (this frame may be a
+         * different task's stack, so caller-saved regs too). */
+        f->a0 = t->regs.rdi;
+        f->a1 = t->regs.rsi;
+        f->a2 = t->regs.rdx;
+        f->a3 = t->regs.r10;
+        f->a4 = t->regs.r8;
+        f->a5 = t->regs.r9;
+        f->r15 = t->regs.r15;
+        f->r14 = t->regs.r14;
+        f->r13 = t->regs.r13;
+        f->r12 = t->regs.r12;
+        f->rbp = t->regs.rbp;
+        f->rbx = t->regs.rbx;
         g_syscall_kstack = t->kernel_stack_top;
         ret = (i64)t->regs.rax;
         fd_init_task_stdio();

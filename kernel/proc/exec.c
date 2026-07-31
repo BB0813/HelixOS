@@ -38,8 +38,8 @@ static u64 push_str(u64 *sp, const char *s)
 #define AT_RANDOM 25
 #define AT_EXECFN 31
 
-static u64 setup_user_stack(u64 stack_top, const char *const argv[],
-                            struct elf_load_info *info, const char *execfn)
+u64 setup_user_stack(u64 stack_top, const char *const argv[],
+                     struct elf_load_info *info, const char *execfn)
 {
     u64 sp = align_down16(stack_top);
     int argc = 0;
@@ -199,6 +199,34 @@ static void linux_compat_run_helixbox(void)
         kernel_idle_loop();
     }
     kprintf("[Helix] M5 linux-compat ready\n");
+    task_set_exit_all_hook(msh_compat_run_smoke);
+    task_start_user();
+}
+
+/* M11: run msh as a userspace shell — fork/exec/waitpid/pipe self-test. */
+void msh_compat_run_smoke(void)
+{
+    kprintf("[Helix] === M11 msh smoke ===\n");
+    const char *path = "/bin/msh";
+    struct vfs_file *probe = 0;
+    if (vfs_open(path, &probe) != 0) {
+        kprintf("[msh] %s missing — skip\n", path);
+        extern void kernel_idle_loop(void);
+        kernel_idle_loop();
+        return;
+    }
+    vfs_close(probe);
+    /* msh -c "echo HelixMshOK | cat" — exercises pipe + dup2 + exec + wait */
+    const char *av[] = { "msh", "-c", "echo HelixMshOK | cat", 0 };
+    task_init();
+    struct task *t = task_exec_path("msh", path, av);
+    if (!t) {
+        kprintf("[msh] FAIL exec /bin/msh\n");
+        extern void kernel_idle_loop(void);
+        kernel_idle_loop();
+        return;
+    }
+    kprintf("[Helix] M11 msh ready\n");
     task_set_exit_all_hook(0);
     task_start_user();
 }

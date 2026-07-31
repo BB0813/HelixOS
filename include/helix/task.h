@@ -26,6 +26,7 @@ struct vfs_file; /* opaque */
 
 struct task {
     int              pid;
+    struct task     *parent;
     enum task_state  state;
     int              exit_code;
     char             name[TASK_NAME_MAX];
@@ -56,6 +57,17 @@ void          task_track_user_page(struct task *t, u64 vaddr, u64 phys);
 struct task  *task_fork(struct task *parent);
 /* Free all tracked user pages (called on exec/exit). */
 void          task_free_user_pages(struct task *t);
+/* Look up a child by pid (0 = any child); NULL if none. */
+struct task  *task_find_child(struct task *parent, int pid);
+/* 1 if a child has exited; -1 if no such child. */
+int           task_child_exited(struct task *parent, int pid);
+/* Free a zombie's resources and mark its slot unused. */
+void          task_reap(struct task *t);
+/* pid of current task (0 if none). */
+int           task_getpid(void);
+/* M11 wait4: wait for a child. want=0 any, >0 specific, <-1 group.
+ * Returns reaped pid; 0 if WNOHANG and none ready; -ECHILD if no children. */
+int           task_wait(int want, int *out_status, int options);
 
 /* Called from syscall path when current task must resume another. */
 void          sched_switch_to(struct task *next);

@@ -47,6 +47,9 @@ fi
 if [[ -f build/user/helixbox.elf ]]; then
   ADD_ARGS+=(--add "build/user/helixbox.elf:bin/helixbox")
 fi
+if [[ -f build/user/msh.elf ]]; then
+  ADD_ARGS+=(--add "build/user/msh.elf:bin/msh")
+fi
 if [[ -f build/user/ld-helix.so ]]; then
   ADD_ARGS+=(--add "build/user/ld-helix.so:lib/ld-helix.so")
 fi

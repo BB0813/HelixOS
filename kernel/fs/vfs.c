@@ -205,6 +205,7 @@ int fd_install(struct vfs_file *f)
     for (int i = 0; i < VFS_FD_MAX; i++) {
         if (!tab[i]) {
             tab[i] = f;
+            f->refcount = 1;
             return i;
         }
     }
@@ -218,17 +219,26 @@ struct vfs_file *fd_get(int fd)
     return fd_table()[fd];
 }
 
+void fd_hold(struct vfs_file *f)
+{
+    if (f)
+        f->refcount++;
+}
+
 int fd_close(int fd)
 {
     if (fd < 0 || fd >= VFS_FD_MAX)
         return -1;
-    if (fd <= 2)
-        return 0;
     struct vfs_file **tab = fd_table();
     struct vfs_file *f = tab[fd];
     if (!f)
         return -1;
+    if (f->is_console)
+        return 0; /* static stdio never closes */
     tab[fd] = 0;
+    f->refcount--;
+    if (f->refcount > 0)
+        return 0; /* still referenced elsewhere (dup2 / fork) */
     if (f->is_socket) {
         extern void net_sock_free(void *s);
         net_sock_free(f->fs_priv);
@@ -236,7 +246,7 @@ int fd_close(int fd)
         kfree(f);
         return 0;
     }
-    return vfs_close(f);
+    return vfs_close(f); /* pipe / file close frees what it owns */
 }
 
 int vfs_console_write(struct vfs_file *f, const char *buf, u64 len)

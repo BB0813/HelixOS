@@ -3,6 +3,7 @@
 /* Linux x86_64 errno values (negative returns from syscall). */
 #define EPERM        1
 #define ENOENT       2
+#define ECHILD      10
 #define EIO          5
 #define EBADF        9
 #define EAGAIN      11

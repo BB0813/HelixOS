@@ -172,6 +172,21 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 ---
 
+## M11 — 进程生命周期（waitpid/pipe/shell） `[x]`
+
+- [x] `wait4`(61)：非阻塞轮询子进程，`WEXITSTATUS = (code & 0xFF) << 8`；zombie reap
+- [x] `pipe`(22)：环形缓冲管道，`EAGAIN` 非阻塞 + 用户态 yield 轮询
+- [x] FD 引用计数：`refcount` + `fd_hold`，fork/dup2 共享、exit/reap 递减
+- [x] syscall 上下文切换修复：完整保存/恢复 caller-saved + callee-saved 寄存器（跨任务 resume）
+- [x] **msh** 用户态 shell：`fork`/`execve`/`waitpid`/`pipe`/`dup2`；builtin echo/cat/ls/cd/help/exit；`|` 管道
+- [x] `execve` argv 支持：从用户空间拷贝 argv，`setup_user_stack` 重建栈
+- [x] helixbox 自检：`PipeOK` + `WaitOK`；msh smoke：`HelixMshOK`
+- [x] `/bin/msh` 写入 ESP；`make smoke-linux` 含 msh pipeline 标记
+
+**验证**：`make smoke-linux` 串口含 `PipeOK` + `WaitOK` + `HelixMshOK` + `helixbox_smoke_done`。
+
+---
+
 ## 文档债务（随里程碑）
 
 - 每完成一阶段：更新本文件状态勾选与 `ARCHITECTURE.md` 中对应子系统
