@@ -1,11 +1,11 @@
-/* msh — HelixOS userspace shell (M11).
+/* msh — HelixOS userspace shell (M12).
  *
- * A real shell built on fork/exec/waitpid/pipe/dup2:
+ * A real shell built on fork/exec/waitpid/pipe/dup2/chdir:
  *   - reads lines from fd 0
  *   - splits on '|' into pipeline stages
  *   - each stage: tokenize → builtin or fork+execve
  *   - parent waits for children, prints exit status
- * Builtins: echo, cd, ls, cat, exit, help.
+ * Builtins: echo, cd, pwd, ls, cat, exit, help.
  */
 #include "usys.h"
 
@@ -16,6 +16,7 @@
 #define SYS_wait4      61
 #define SYS_pipe       22
 #define SYS_getcwd     79
+#define SYS_chdir      80
 #define SYS_getpid     39
 #define SYS_open        2
 #define SYS_close       3
@@ -151,7 +152,7 @@ static int bi_cat(int argc, char **argv)
 
 static int bi_ls(int argc, char **argv)
 {
-    const char *path = argc > 1 ? argv[1] : "/";
+    const char *path = argc > 1 ? argv[1] : ".";
     long fd = usys6(SYS_open, (long)path, 0, 0, 0, 0, 0);
     if (fd < 0) {
         msh_write("ls: open failed\n");
@@ -181,9 +182,33 @@ static int bi_ls(int argc, char **argv)
 
 static int bi_help(void)
 {
-    msh_write("msh: HelixOS shell (M11)\n");
-    msh_write("  echo | cat | ls | cd | exit | help\n");
+    msh_write("msh: HelixOS shell (M12)\n");
+    msh_write("  echo | cat | ls | cd | pwd | exit | help\n");
     msh_write("  pipelines: cmd1 | cmd2 | ...\n");
+    return 0;
+}
+
+static int bi_pwd(void)
+{
+    char buf[256];
+    long r = usys6(SYS_getcwd, (long)buf, 256, 0, 0, 0, 0);
+    if (r < 0) {
+        msh_write("pwd: failed\n");
+        return 1;
+    }
+    msh_write(buf);
+    msh_write("\n");
+    return 0;
+}
+
+static int bi_cd(int argc, char **argv)
+{
+    const char *path = argc > 1 ? argv[1] : "/";
+    long r = usys6(SYS_chdir, (long)path, 0, 0, 0, 0, 0);
+    if (r < 0) {
+        msh_write("cd: failed\n");
+        return 1;
+    }
     return 0;
 }
 
@@ -330,10 +355,8 @@ static int msh_exec_line(const char *cline)
         if (msh_streq(argv0[0], "echo")) return bi_echo(argc0, argv0);
         if (msh_streq(argv0[0], "cat"))  return bi_cat(argc0, argv0);
         if (msh_streq(argv0[0], "ls"))   return bi_ls(argc0, argv0);
-        if (msh_streq(argv0[0], "cd")) {
-            msh_write("cd: no cwd support (stays /)\n");
-            return 0;
-        }
+        if (msh_streq(argv0[0], "cd"))   return bi_cd(argc0, argv0);
+        if (msh_streq(argv0[0], "pwd"))  return bi_pwd();
     }
     for (int i = 1; i < nstages; i++) {
         char **av = argv_list[i] = (char *[MSH_ARGV_MAX]){0};
@@ -344,7 +367,7 @@ static int msh_exec_line(const char *cline)
 
 void msh_main(int argc, char **argv)
 {
-    msh_write("HelixOS msh (M11) — fork/exec/waitpid/pipe shell\n");
+    msh_write("HelixOS msh (M12) — fork/exec/waitpid/pipe/cwd shell\n");
 
     /* Non-interactive: msh -c "command" */
     if (argc >= 3 && msh_streq(argv[1], "-c")) {

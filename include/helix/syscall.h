@@ -40,6 +40,7 @@
 #define SYS_uname            63
 #define SYS_fcntl            72
 #define SYS_getcwd           79
+#define SYS_chdir            80
 #define SYS_mkdir            83
 #define SYS_arch_prctl      158
 #define SYS_getdents64      217

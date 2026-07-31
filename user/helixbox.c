@@ -20,6 +20,8 @@
 #define SYS_dup2        33
 #define SYS_execve      59
 #define SYS_exit        60
+#define SYS_getcwd      79
+#define SYS_chdir       80
 #define WNOHANG          1
 
 /* Linux open flags */
@@ -212,6 +214,55 @@ static void cmd_smoke(void)
     cmd_uname();
     char *e4[] = { "sh", "-c", "echo sh_ok", 0 };
     cmd_sh(3, e4);
+
+    /* M12: cwd + chdir + relative open self-test */
+    {
+        char gbuf[64];
+        long r = usys6(SYS_getcwd, (long)gbuf, 64, 0, 0, 0, 0);
+        int ok = (r >= 0 && gbuf[0] == '/' && gbuf[1] == 0);
+        if (!ok) {
+            xwrite("HelixCwdFAIL getcwd root\n");
+        } else {
+            usys(SYS_mkdir, (long)"/tmp/cwdtest", 0755, 0);
+            r = usys(SYS_chdir, (long)"/tmp/cwdtest", 0, 0);
+            if (r < 0) {
+                xwrite("HelixCwdFAIL chdir\n");
+            } else {
+                r = usys6(SYS_getcwd, (long)gbuf, 64, 0, 0, 0, 0);
+                const char *exp = "/tmp/cwdtest";
+                int match = 1;
+                for (int i = 0; exp[i]; i++)
+                    if (gbuf[i] != exp[i]) match = 0;
+                if (!match || gbuf[12] != 0) {
+                    xwrite("HelixCwdFAIL getcwd tmp\n");
+                } else {
+                    long fd = usys(SYS_open, (long)"rel.txt",
+                                   (long)(O_WRONLY | O_CREAT | O_TRUNC), 0);
+                    if (fd < 0) {
+                        xwrite("HelixCwdFAIL rel open\n");
+                    } else {
+                        const char *msg = "cwd_rel_ok\n";
+                        long n = 0; while (msg[n]) n++;
+                        usys(SYS_write, fd, (long)msg, n);
+                        usys(SYS_close, fd, 0, 0);
+                        usys(SYS_chdir, (long)"/", 0, 0);
+                        fd = usys(SYS_open, (long)"/tmp/cwdtest/rel.txt", 0, 0);
+                        if (fd < 0) {
+                            xwrite("HelixCwdFAIL abs reopen\n");
+                        } else {
+                            char rbuf[16];
+                            long nr = usys(SYS_read, fd, (long)rbuf, 16);
+                            usys(SYS_close, fd, 0, 0);
+                            if (nr >= 10 && rbuf[0]=='c' && rbuf[1]=='w' && rbuf[2]=='d')
+                                xwrite("HelixCwdOK\n");
+                            else
+                                xwrite("HelixCwdFAIL content\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /* writable /tmp */
     char *mk[] = { "mkdir", "/tmp/a", 0 };

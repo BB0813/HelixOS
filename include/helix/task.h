@@ -30,6 +30,7 @@ struct task {
     enum task_state  state;
     int              exit_code;
     char             name[TASK_NAME_MAX];
+    char             cwd[256];   /* absolute cwd; always starts with '/' */
     struct task_regs regs;
     u64              user_stack_top;
     u64              kernel_stack;

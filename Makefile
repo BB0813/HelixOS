@@ -192,6 +192,11 @@ smoke-linux: esp
 	fi; \
 	if grep -a -F -q "HelixMshOK" $(ROOT)/serial.log 2>/dev/null; then \
 		echo "SMOKE-LINUX OK (msh pipeline)"; \
+	fi; \
+	if grep -a -F -q "HelixCwdOK" $(ROOT)/serial.log 2>/dev/null; then \
+		echo "SMOKE-LINUX OK (cwd/chdir)"; \
+	else \
+		echo "SMOKE-LINUX WARN: HelixCwdOK missing"; \
 	fi
 
 smoke-musl: esp

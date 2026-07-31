@@ -49,8 +49,9 @@
 | 61 | wait4 | **done** | 非阻塞轮询；`(code&0xFF)<<8`；reap zombie |
 | 63 | uname | **done** | sysname **Helix** |
 | 72 | fcntl | **partial** | stub |
-| 79 | getcwd | **done** | 恒 `"/"` |
-| 83 | mkdir | **done** | **`/tmp/...` 与 FAT 根 8.3** |
+| 79 | getcwd | **done** | 每任务真实 cwd（默认 `"/"`） |
+| 80 | chdir | **done** | 路径解析 + 目录校验；fork 继承 |
+| 83 | mkdir | **done** | **`/tmp/...` 与 FAT 根 8.3**；相对路径经 cwd |
 | 22 | pipe | **done** | 环形缓冲；EAGAIN 非阻塞 |
 | 158 | arch_prctl | **partial** | `ARCH_SET_FS` / `GET_FS`（MSR） |
 | 217 | getdents64 | **done** | FAT 根或 /tmp |
@@ -85,3 +86,4 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-01 | M8 TCP stubs：`connect`/`accept`/`listen`/`sendmsg`/`recvmsg`/`setsockopt`/`getsockopt` → ENOSYS |
 | 2026-08-01 | M10：`fork`/`execve`（独立 PML4 + 页表递归复制）→ **`ForkChildOK`** |
 | 2026-08-01 | M11：`wait4`/`pipe`/`dup2` refcount + syscall 全寄存器切换 → **`PipeOK`**/**`WaitOK`**；**msh** shell → **`HelixMshOK`** |
+| 2026-08-01 | M12：per-task cwd + `chdir`(80) + 路径解析；console stdin poll；msh cd/pwd → **`HelixCwdOK`** |

@@ -77,6 +77,8 @@ struct task *task_create(const char *name, u64 entry, u64 user_sp)
     t->parent = 0;
     t->state = TASK_READY;
     t->exit_code = 0;
+    t->cwd[0] = '/';
+    t->cwd[1] = 0;
     if (name) {
         size_t n = strlen(name);
         if (n >= TASK_NAME_MAX)

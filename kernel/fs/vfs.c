@@ -21,9 +21,22 @@ static int cons_open(const char *path, int flags, struct vfs_file **out)
 static int cons_read(struct vfs_file *f, void *buf, u64 len, u64 *out_n)
 {
     (void)f;
-    (void)buf;
-    (void)len;
-    *out_n = 0;
+    if (!buf || !out_n || len == 0) {
+        if (out_n)
+            *out_n = 0;
+        return 0;
+    }
+    /* Non-blocking poll of COM1. Userspace loops on -EAGAIN with yield. */
+    char c;
+    if (!serial_poll_char(&c)) {
+        *out_n = 0;
+        return -11; /* EAGAIN */
+    }
+    /* Map CR → LF so readline works over serial */
+    if (c == '\r')
+        c = '\n';
+    ((char *)buf)[0] = c;
+    *out_n = 1;
     return 0;
 }
 
@@ -118,6 +131,120 @@ int vfs_open_flags(const char *path, int flags, struct vfs_file **out)
     if (!g_root_ops || !g_root_ops->open)
         return -1;
     return g_root_ops->open(path, flags, out);
+}
+
+/* Normalize path against cwd into absolute out[]. Handles ., .., //.
+ * cwd must be absolute (starts with '/'). path may be absolute or relative.
+ * Always produces a leading '/' result. Returns 0 or -1 (overflow/bad). */
+int vfs_path_resolve(const char *cwd, const char *path, char *out, u64 out_cap)
+{
+    if (!path || !out || out_cap < 2)
+        return -1;
+    if (!cwd || !cwd[0])
+        cwd = "/";
+
+    char tmp[VFS_PATH_MAX];
+    u64 ti = 0;
+    if (path[0] == '/') {
+        /* absolute */
+        while (path[ti] && ti + 1 < sizeof(tmp)) {
+            tmp[ti] = path[ti];
+            ti++;
+        }
+        tmp[ti] = 0;
+    } else {
+        /* relative: cwd + '/' + path */
+        u64 ci = 0;
+        while (cwd[ci] && ci + 1 < sizeof(tmp)) {
+            tmp[ci] = cwd[ci];
+            ci++;
+        }
+        if (ci == 0 || tmp[ci - 1] != '/') {
+            if (ci + 1 >= sizeof(tmp))
+                return -1;
+            tmp[ci++] = '/';
+        }
+        u64 pi = 0;
+        while (path[pi] && ci + 1 < sizeof(tmp)) {
+            tmp[ci++] = path[pi++];
+        }
+        tmp[ci] = 0;
+        ti = ci;
+    }
+    (void)ti;
+
+    /* Collapse ., .., and // into out. */
+    char comps[32][64];
+    int ncomp = 0;
+    const char *p = tmp;
+    while (*p == '/')
+        p++;
+    while (*p) {
+        char comp[64];
+        int n = 0;
+        while (*p && *p != '/' && n < 63)
+            comp[n++] = *p++;
+        comp[n] = 0;
+        while (*p == '/')
+            p++;
+        if (n == 0 || (n == 1 && comp[0] == '.'))
+            continue;
+        if (n == 2 && comp[0] == '.' && comp[1] == '.') {
+            if (ncomp > 0)
+                ncomp--;
+            continue;
+        }
+        if (ncomp >= 32)
+            return -1;
+        for (int i = 0; i < n; i++)
+            comps[ncomp][i] = comp[i];
+        comps[ncomp][n] = 0;
+        ncomp++;
+    }
+
+    if (ncomp == 0) {
+        out[0] = '/';
+        out[1] = 0;
+        return 0;
+    }
+    u64 oi = 0;
+    for (int i = 0; i < ncomp; i++) {
+        if (oi + 1 >= out_cap)
+            return -1;
+        out[oi++] = '/';
+        for (int j = 0; comps[i][j]; j++) {
+            if (oi + 1 >= out_cap)
+                return -1;
+            out[oi++] = comps[i][j];
+        }
+    }
+    out[oi] = 0;
+    return 0;
+}
+
+/* Probe whether path is an existing directory by opening it RO and checking is_dir. */
+int vfs_path_is_dir(const char *path)
+{
+    if (!path)
+        return 0;
+    /* Root and /tmp are always directories. */
+    if (path[0] == '/' && path[1] == 0)
+        return 1;
+    if (is_tmp_path(path)) {
+        /* /tmp itself or a ramfs node — open and check */
+        struct vfs_file *f = 0;
+        if (vfs_open_flags(path, VFS_O_RDONLY, &f) != 0)
+            return 0;
+        int d = f->is_dir;
+        vfs_close(f);
+        return d;
+    }
+    struct vfs_file *f = 0;
+    if (vfs_open_flags(path, VFS_O_RDONLY, &f) != 0)
+        return 0;
+    int d = f->is_dir;
+    vfs_close(f);
+    return d;
 }
 
 int vfs_open(const char *path, struct vfs_file **out)

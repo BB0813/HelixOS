@@ -49,6 +49,10 @@ int  vfs_close(struct vfs_file *f);
 int  vfs_mkdir(const char *path, int mode);
 int  vfs_read_all(const char *path, void *buf, u64 cap, u64 *out_n);
 int  vfs_root_list(void (*cb)(const char *name, u64 size, void *user), void *user);
+/* Resolve path against cwd into absolute out[]. Handles ., .., //. Returns 0 or -1. */
+int  vfs_path_resolve(const char *cwd, const char *path, char *out, u64 out_cap);
+/* 1 if path names an existing directory (openable as dir). */
+int  vfs_path_is_dir(const char *path);
 
 int  fd_install(struct vfs_file *f);
 struct vfs_file *fd_get(int fd);

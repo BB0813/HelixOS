@@ -203,10 +203,10 @@ static void linux_compat_run_helixbox(void)
     task_start_user();
 }
 
-/* M11: run msh as a userspace shell — fork/exec/waitpid/pipe self-test. */
+/* M11/M12: run msh — pipe pipeline + (cwd covered by helixbox HelixCwdOK). */
 void msh_compat_run_smoke(void)
 {
-    kprintf("[Helix] === M11 msh smoke ===\n");
+    kprintf("[Helix] === M11/M12 msh smoke ===\n");
     const char *path = "/bin/msh";
     struct vfs_file *probe = 0;
     if (vfs_open(path, &probe) != 0) {
@@ -226,7 +226,7 @@ void msh_compat_run_smoke(void)
         kernel_idle_loop();
         return;
     }
-    kprintf("[Helix] M11 msh ready\n");
+    kprintf("[Helix] M11/M12 msh ready\n");
     task_set_exit_all_hook(0);
     task_start_user();
 }

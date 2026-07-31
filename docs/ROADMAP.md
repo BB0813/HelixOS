@@ -187,6 +187,20 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 ---
 
+## M12 — cwd / chdir / 路径解析 / console stdin `[x]`
+
+- [x] per-task `cwd[256]`；`task_create` 默认 `"/"`；fork 经 memcpy 继承
+- [x] `getcwd`(79) 返回真实 cwd；`chdir`(80) 解析路径并校验目录
+- [x] `vfs_path_resolve`：相对路径 + `.`/`..`/`//` 归一化为绝对路径
+- [x] `open`/`mkdir`/`execve`/`newfstatat` 经 cwd 解析
+- [x] console stdin：`cons_read` 轮询 COM1，空则 `-EAGAIN`（用户态 yield 轮询）
+- [x] msh：`cd`/`pwd` builtins；`ls` 默认 `"."`
+- [x] helixbox 自检：chdir `/tmp/cwdtest` + 相对 open → **`HelixCwdOK`**
+
+**验证**：`make smoke-linux` 串口含 `HelixCwdOK` + `HelixMshOK` + `helixbox_smoke_done`。
+
+---
+
 ## 文档债务（随里程碑）
 
 - 每完成一阶段：更新本文件状态勾选与 `ARCHITECTURE.md` 中对应子系统

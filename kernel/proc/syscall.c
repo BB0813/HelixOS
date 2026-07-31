@@ -103,15 +103,28 @@ static i64 sys_read(u64 fd, u64 buf, u64 count)
     return (i64)n;
 }
 
+/* Resolve user path against current task cwd into abs[]. */
+static int resolve_user_path(u64 uptr, char *abs, u64 abs_cap)
+{
+    char kpath[VFS_PATH_MAX];
+    if (copy_user_path(uptr, kpath, sizeof(kpath)) != 0)
+        return -1;
+    struct task *t = task_current();
+    const char *cwd = (t && t->cwd[0]) ? t->cwd : "/";
+    if (vfs_path_resolve(cwd, kpath, abs, abs_cap) != 0)
+        return -1;
+    return 0;
+}
+
 static i64 sys_open(u64 path, u64 flags, u64 mode)
 {
     (void)mode;
-    char kpath[VFS_PATH_MAX];
-    if (copy_user_path(path, kpath, sizeof(kpath)) != 0)
+    char abs[VFS_PATH_MAX];
+    if (resolve_user_path(path, abs, sizeof(abs)) != 0)
         return ERR(EFAULT);
     struct vfs_file *f = 0;
     int fl = (int)flags;
-    if (vfs_open_flags(kpath, fl, &f) != 0)
+    if (vfs_open_flags(abs, fl, &f) != 0)
         return ERR(ENOENT);
     fd_init_task_stdio();
     int fd = fd_install(f);
@@ -124,10 +137,10 @@ static i64 sys_open(u64 path, u64 flags, u64 mode)
 
 static i64 sys_mkdir(u64 path, u64 mode)
 {
-    char kpath[VFS_PATH_MAX];
-    if (copy_user_path(path, kpath, sizeof(kpath)) != 0)
+    char abs[VFS_PATH_MAX];
+    if (resolve_user_path(path, abs, sizeof(abs)) != 0)
         return ERR(EFAULT);
-    if (vfs_mkdir(kpath, (int)mode) != 0)
+    if (vfs_mkdir(abs, (int)mode) != 0)
         return ERR(EACCES);
     return 0;
 }
@@ -237,11 +250,11 @@ static i64 sys_newfstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags)
     (void)flags;
     if (!user_ptr_ok((void *)(uintptr_t)statbuf, 144))
         return ERR(EFAULT);
-    char kpath[VFS_PATH_MAX];
-    if (copy_user_path(path, kpath, sizeof(kpath)) != 0)
+    char abs[VFS_PATH_MAX];
+    if (resolve_user_path(path, abs, sizeof(abs)) != 0)
         return ERR(EFAULT);
     struct vfs_file *f = 0;
-    if (vfs_open(kpath, &f) != 0)
+    if (vfs_open(abs, &f) != 0)
         return ERR(ENOENT);
     long r = vfs_fstat(f, (void *)(uintptr_t)statbuf);
     vfs_close(f);
@@ -497,10 +510,38 @@ static i64 sys_getcwd(u64 buf, u64 size)
 {
     if (size < 2 || !user_ptr_ok((void *)(uintptr_t)buf, size))
         return ERR(EFAULT);
+    struct task *t = task_current();
+    const char *cwd = (t && t->cwd[0]) ? t->cwd : "/";
+    u64 n = 0;
+    while (cwd[n])
+        n++;
+    if (n + 1 > size)
+        return ERR(ERANGE);
     char *b = (char *)(uintptr_t)buf;
-    b[0] = '/';
-    b[1] = 0;
-    return (i64)buf;
+    for (u64 i = 0; i < n; i++)
+        b[i] = cwd[i];
+    b[n] = 0;
+    return (i64)buf; /* Linux getcwd returns pointer on success via rax=buf */
+}
+
+static i64 sys_chdir(u64 path)
+{
+    char abs[VFS_PATH_MAX];
+    if (resolve_user_path(path, abs, sizeof(abs)) != 0)
+        return ERR(EFAULT);
+    if (!vfs_path_is_dir(abs))
+        return ERR(ENOENT);
+    struct task *t = task_current();
+    if (!t)
+        return ERR(ENOMEM);
+    /* Copy abs into t->cwd */
+    u64 i = 0;
+    while (abs[i] && i + 1 < sizeof(t->cwd)) {
+        t->cwd[i] = abs[i];
+        i++;
+    }
+    t->cwd[i] = 0;
+    return 0;
 }
 
 /* Linux x86_64: socket(AF_INET=2, SOCK_DGRAM=2, IPPROTO_UDP=17) */
@@ -699,15 +740,10 @@ static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
     if (!t)
         return ERR(ENOMEM);
 
-    /* Copy pathname from user */
-    char path[128];
-    if (!user_ptr_ok((const void *)pathname, 1))
+    /* Copy pathname from user and resolve against cwd */
+    char path[VFS_PATH_MAX];
+    if (resolve_user_path(pathname, path, sizeof(path)) != 0)
         return ERR(EFAULT);
-    const char *src = (const char *)pathname;
-    int i;
-    for (i = 0; i < 127 && src[i]; i++)
-        path[i] = src[i];
-    path[i] = 0;
 
     kprintf("[exec] pid=%d execve path=%s\n", t->pid, path);
 
@@ -873,6 +909,7 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case SYS_getpid:      ret = sys_getpid(); break;
     case SYS_fcntl:       ret = sys_fcntl(f->a0, f->a1, f->a2); break;
     case SYS_getcwd:      ret = sys_getcwd(f->a0, f->a1); break;
+    case SYS_chdir:       ret = sys_chdir(f->a0); break;
     case SYS_mkdir:       ret = sys_mkdir(f->a0, f->a1); break;
     case SYS_mmap:        ret = sys_mmap(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
     case SYS_mprotect:    ret = sys_mprotect(f->a0, f->a1, f->a2); break;
