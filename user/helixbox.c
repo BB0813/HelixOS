@@ -5,6 +5,7 @@
 #define SYS_write       1
 #define SYS_open        2
 #define SYS_close       3
+#define SYS_yield      24
 #define SYS_uname      63
 #define SYS_mkdir      83
 #define SYS_getdents64 217
@@ -283,6 +284,62 @@ done_sock:
         } else {
             xwrite("fork_fail\n");
         }
+    }
+
+    /* M8: host ↔ guest UDP ping via QEMU port forward */
+    {
+        /* AF_INET=2, SOCK_DGRAM=2, UDP=17 */
+        long sfd = usys(SYS_socket, 2, 2, 17);
+        if (sfd < 0) {
+            xwrite("host_udp: socket fail\n");
+            goto done;
+        }
+        /* Bind on port 12345 (0x3039 BE) */
+        unsigned char bsa[16];
+        for (int i = 0; i < 16; i++) bsa[i] = 0;
+        bsa[0] = 2; bsa[1] = 0;       /* AF_INET */
+        bsa[2] = 0x30; bsa[3] = 0x39;  /* port 12345 BE */
+        long r = usys(SYS_bind, sfd, (long)bsa, 16);
+        if (r < 0) {
+            xwrite("host_udp: bind fail\n");
+            usys(SYS_close, sfd, 0, 0);
+            goto done;
+        }
+        /* Destination: 10.0.2.2:12345 (QEMU host forward) */
+        unsigned char dsa[16];
+        for (int i = 0; i < 16; i++) dsa[i] = 0;
+        dsa[0] = 2; dsa[1] = 0;       /* AF_INET */
+        dsa[2] = 0x30; dsa[3] = 0x39;  /* port 12345 BE */
+        dsa[4] = 10; dsa[5] = 2; dsa[6] = 0; dsa[7] = 2; /* 10.0.2.2 BE */
+        const char *ping = "HELIX_PING";
+        long plen = 0;
+        while (ping[plen]) plen++;
+        r = usys6(SYS_sendto, sfd, (long)ping, plen, 0, (long)dsa, 16);
+        if (r < 0) {
+            xwrite("host_udp: send fail\n");
+            usys(SYS_close, sfd, 0, 0);
+            goto done;
+        }
+        /* Poll recvfrom with yield (cooperative wait) */
+        char rbuf[64];
+        int ok = 0;
+        for (int attempt = 0; attempt < 200; attempt++) {
+            long nr = usys6(SYS_recvfrom, sfd, (long)rbuf, 64, 0, 0, 0);
+            if (nr > 0) {
+                /* Check reply starts with "ECHO:HELIX_PING" */
+                const char *expect = "ECHO:HELIX_PING";
+                ok = 1;
+                for (long i = 0; i < nr && i < 15; i++)
+                    if (rbuf[i] != expect[i]) { ok = 0; break; }
+                break;
+            }
+            usys(SYS_yield, 0, 0, 0);
+        }
+        if (ok)
+            xwrite("host_udp_ok\n");
+        else
+            xwrite("host_udp_timeout\n");
+        usys(SYS_close, sfd, 0, 0);
     }
 
 done:

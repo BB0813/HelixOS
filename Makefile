@@ -224,8 +224,9 @@ smoke-net: esp
 	@grep -a -F -q "10.0.2.15" $(ROOT)/serial.log || { echo SMOKE-NET FAIL IP; exit 1; }
 	@grep -a -F -q "HelixNetOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixNetOK; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "ICMP echo reply" $(ROOT)/serial.log || { echo SMOKE-NET FAIL ICMP; exit 1; }
+	@grep -a -F -q "user_udp_ok" $(ROOT)/serial.log || { echo SMOKE-NET FAIL user_udp_ok; cat $(ROOT)/serial.log; exit 1; }
 	@echo SMOKE-NET OK
-	@grep -a -E 'net|arp|icmp|HelixNet' $(ROOT)/serial.log | head -40
+	@grep -a -E 'net|arp|icmp|udp|HelixNet|host_udp' $(ROOT)/serial.log | head -40
 
 smoke-fb: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd

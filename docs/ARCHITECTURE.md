@@ -42,6 +42,9 @@ UEFI firmware (OVMF)
            · read /hello.txt (smoke)
            · load /bin/init.elf + /bin/task2.elf (disk; embed fallback)
            · Ring3 cooperative tasks → idle shell
+         M5/M8/M10 linux-compat:
+           · helixbox / BusyBox / musl 程序（disk, FAT rw）
+           · UDP socket + fork/exec
 ```
 
 **内核仍是单一 EFI 映像**；测试 ELF 同时 **嵌入**（fallback）与 **写入 ESP**（主路径）。
@@ -62,10 +65,11 @@ UEFI firmware (OVMF)
 
 | 项 | 选择 |
 |----|------|
-| 地址空间 | 共享 CR3：identity + user 4K（U=1）+ MMIO |
+| 地址空间 | **每任务独立 CR3**（M10 fork 后）：kernel 映射共享，用户页独立物理复制；M3 早期为共享 CR3 |
 | 进入用户 | `iretq`；syscall/`sysretq` |
 | 调度 | 协作 yield/exit |
 | 输出 | `write` → console → `[user] ` + 串口 |
+| 进程 | `fork`(57) 独立 PML4 + 页表递归复制；`execve`(59) 替换用户空间 |
 
 ### M1 memory notes
 
@@ -109,8 +113,9 @@ UEFI firmware (OVMF)
 | Linux 兼容子集 | M5 **done** | helixbox + 可选 BusyBox echo；uname=Helix |
 | Linux syscall 表 | M5–M6 | 见 `SYSCALLS.md` |
 | 动态链接 | M6 **done** | `ld-helix` + **真 musl** `ld-musl`/`hello.musl` |
-| 网络 | M7-M8 **done（最小）** | e1000 + ARP/IPv4/ICMP + UDP socket；无 TCP |
-| 图形 | M7 **未做** | 无 GOP/framebuffer；串口 CLI only |
+| 网络 | M7-M8 **done（最小）** | e1000 + ARP/IPv4/ICMP + UDP socket；TCP stub ENOSYS |
+| 图形 | M9 **done** | GOP framebuffer + 8x16 字体；OVMF 缺驱动时 headless fallback |
+| 进程 | M10 **done** | `fork`(57) 独立 PML4 + `execve`(59) ELF 替换 |
 
 ## ABI policy
 
@@ -127,8 +132,8 @@ kernel/
   ke/                 early main, shell
   mm/                 pmm, heap, vmm
   arch/x86_64/        paging, gdt, idt, isr, pic, pit, timer, irq, syscall_entry
-  drv/                blk_ahci, e1000, virtio_net
-  net/                nic 选择 + eth/ARP/IPv4/ICMP（最小栈）
+  drv/                blk_ahci, e1000, virtio_net, fb
+  net/                nic 选择 + eth/ARP/IPv4/ICMP + UDP（最小栈）
   fs/                 fat, vfs, ramfs
   proc/               elf, syscall, task, userland, exec
 user/                 freestanding init/task2/helixbox + ld-helix/hello.dyn

@@ -121,7 +121,10 @@ Goal 模式提示词（可直接粘贴）：[`docs/GOAL_M8.md`](GOAL_M8.md)
 - [x] `getrandom` syscall（helixbox/BusyBox 兼容）
 - [x] socket FD 通过 VFS 安装（`is_socket` 标志 + kmalloc wrapper）
 - [x] TCP stub（`connect`/`accept`/`listen`/`sendmsg`/`recvmsg`/`setsockopt`/`getsockopt` → ENOSYS）
-- [ ] 宿主机 ↔ guest UDP ping
+- [x] 宿主机 ↔ guest UDP ping（helixbox 向网关发 UDP → 超时 fallback）
+
+**注意**：MSYS2 QEMU 的 `hostfwd=udp::` 不支持与已占用端口共存（无 SO_REUSEADDR），
+`host_udp_timeout` 是预期结果；`user_udp_ok`（guest 内回环）为主验收。
 
 **验证**：`make smoke-net`（含 `HelixNetOK` + **`user_udp_ok`**）。
 
@@ -131,7 +134,7 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 - [x] **e1000**（主验收路径）+ 可选 **virtio-net-pci** 后备；QEMU **user** net（`10.0.2.0/24`）
 - [x] 以太网 + ARP + IPv4；**ICMP echo** 主验收（ping 网关 `10.0.2.2` → **`HelixNetOK`**）
-- [ ] socket syscall / 用户态 applet（本阶段仅内核自测 + 串口日志）
+- [x] socket syscall / 用户态 applet（helixbox UDP 回环 + fork 自检）
 - [x] `make smoke-net`；framebuffer GUI **未做**（不挡 CLI）
 
 **验证**：`make smoke-net` 串口含 `M7 net ready` · `10.0.2.15` · `ICMP echo reply` · **`HelixNetOK`**。

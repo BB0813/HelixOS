@@ -49,6 +49,11 @@ static inline long sys_execve(const char *path, char *const argv[], char *const 
     return usyscall(SYS_execve, (long)path, (long)argv, (long)envp);
 }
 
+static inline void yield(void)
+{
+    usyscall(SYS_yield, 0, 0, 0);
+}
+
 static inline unsigned long ustrlen(const char *s)
 {
     unsigned long n = 0;
