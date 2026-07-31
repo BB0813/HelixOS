@@ -51,7 +51,7 @@ C_SRCS := \
 	kernel/arch/x86_64/idt.c kernel/arch/x86_64/pic.c \
 	kernel/arch/x86_64/pit.c kernel/arch/x86_64/timer.c \
 	kernel/arch/x86_64/irq.c \
-	kernel/drv/blk_ahci.c kernel/drv/virtio_net.c kernel/drv/e1000.c \
+	kernel/drv/blk_ahci.c kernel/drv/virtio_net.c kernel/drv/e1000.c kernel/drv/fb.c \
 	kernel/net/nic.c kernel/net/net.c kernel/net/udp.c \
 	kernel/fs/fat.c kernel/fs/vfs.c kernel/fs/fs.c kernel/fs/ramfs.c \
 	kernel/proc/elf.c kernel/proc/syscall.c kernel/proc/task.c \
@@ -79,12 +79,12 @@ endif
 
 .PHONY: all clean esp run user check-deps dirs help fetch-busybox \
 	smoke smoke-user smoke-fs smoke-linux smoke-dyn smoke-shell smoke-panic \
-	smoke-net
+	smoke-net smoke-fb
 
 all: $(OUT)/BOOTX64.EFI
 
 help:
-	@echo "HelixOS: all user esp run smoke* smoke-net clean"
+	@echo "HelixOS: all user esp run smoke* smoke-fb smoke-net clean"
 
 dirs:
 	$(MKDIR) $(BUILD)/boot $(BUILD)/libk $(BUILD)/kernel/ke $(BUILD)/kernel/mm \
@@ -226,3 +226,14 @@ smoke-net: esp
 	@grep -a -F -q "ICMP echo reply" $(ROOT)/serial.log || { echo SMOKE-NET FAIL ICMP; exit 1; }
 	@echo SMOKE-NET OK
 	@grep -a -E 'net|arp|icmp|HelixNet' $(ROOT)/serial.log | head -40
+
+smoke-fb: esp
+	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
+	@HEADLESS=0 TIMEOUT_SECS=35 bash $(ROOT)/scripts/run-qemu.sh || true
+	@if grep -a -F -q "fb_smoke_done" $(ROOT)/serial.log 2>/dev/null; then \
+		echo "SMOKE-FB OK (framebuffer)"; \
+	elif grep -a -F -q "M9 no framebuffer" $(ROOT)/serial.log 2>/dev/null; then \
+		echo "SMOKE-FB OK (no GOP — headless fallback, OVMF lacks QemuVideoDxe)"; \
+	else \
+		echo "SMOKE-FB FAIL"; cat $(ROOT)/serial.log; exit 1; \
+	fi

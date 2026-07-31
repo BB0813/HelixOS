@@ -38,6 +38,9 @@ Thumbs.db
 /third_party/busybox/busybox
 /third_party/busybox/*.tar.*
 
+# Downloaded OVMF firmware (from ArchLinux/Ubuntu packages)
+/third_party/ovmf*/
+
 
 # Python
 __pycache__/

@@ -158,6 +158,61 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
     }
     memset(info, 0, sizeof(*info));
 
+    /* M9: Locate GOP and capture framebuffer before ExitBootServices.
+     * First try LocateProtocol; if GOP isn't found, try recursively
+     * connecting all controllers (loads video DXE drivers), then retry.
+     * Some OVMF builds need an explicit ConnectController call to load
+     * the video driver onto the VGA device. */
+    {
+        EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+        EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
+
+        st = bs->LocateProtocol(&gop_guid, 0, (void**)&gop);
+
+        /* If GOP not found, recursively connect all controllers to load video drivers */
+        if ((EFI_ERROR(st) || !gop) && bs->ConnectController) {
+            kprintf("[Helix] GOP not found, trying ConnectController\n");
+            bs->ConnectController(0, 0, 0, 1 /*Recursive*/);
+            st = bs->LocateProtocol(&gop_guid, 0, (void**)&gop);
+        }
+
+        if (gop && gop->Mode) {
+            st = EFI_SUCCESS;
+            /* Find best mode with width ≥ 640 */
+            uint32_t best = gop->Mode->Mode;
+            uint32_t best_w = gop->Mode->Info->HorizontalResolution;
+            for (uint32_t m = 0; m < gop->Mode->MaxMode; m++) {
+                EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mi = 0;
+                uint64_t sz = 0;
+                if (gop->QueryMode(gop, m, &sz, &mi) == EFI_SUCCESS && mi) {
+                    if (mi->HorizontalResolution >= 640 &&
+                        mi->HorizontalResolution >= best_w) {
+                        best = m;
+                        best_w = mi->HorizontalResolution;
+                    }
+                }
+            }
+            if (best != gop->Mode->Mode)
+                gop->SetMode(gop, best);
+            EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mi = gop->Mode->Info;
+            info->fb_addr   = gop->Mode->FrameBufferBase;
+            info->fb_size   = gop->Mode->FrameBufferSize;
+            info->fb_width  = mi->HorizontalResolution;
+            info->fb_height = mi->VerticalResolution;
+            info->fb_pitch  = mi->PixelsPerScanLine * 4;
+            info->fb_bpp    = 32;
+            kprintf("[Helix] GOP fb=0x%llx %ux%u pitch=%u\n",
+                    (unsigned long long)info->fb_addr,
+                    info->fb_width, info->fb_height, info->fb_pitch);
+            /* Ensure phys_ceiling covers framebuffer so identity map includes it */
+            u64 fb_end = info->fb_addr + info->fb_size;
+            if (fb_end > ceiling)
+                ceiling = fb_end;
+        } else {
+            kprintf("[Helix] GOP not found (no framebuffer)\n");
+        }
+    }
+
     /* Dedicated kernel stack (LoaderData pages) so we can leave the UEFI stack. */
     {
         EFI_PHYSICAL_ADDRESS stack_phys = 0;

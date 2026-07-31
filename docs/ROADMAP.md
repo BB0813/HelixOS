@@ -138,6 +138,24 @@ Goal：[`docs/GOAL_M7.md`](GOAL_M7.md)
 
 ---
 
+## M9 — 图形（GOP 帧缓冲） `[x]`
+
+- [x] `efi.h` 新增 `EFI_GRAPHICS_OUTPUT_PROTOCOL`（GOP）结构体
+- [x] `boot_info.h` 新增 `fb_addr/fb_width/fb_height/fb_pitch/fb_bpp` 字段
+- [x] `efi_main.c`：ExitBootServices 前 LocateProtocol 拿 GOP → 选 ≥640 宽模式 → 填 boot_info
+- [x] `kernel/drv/fb.c`：`fb_init` / `fb_cls` / `fb_pixel` / `fb_rect` / `fb_put_char` / `fb_puts`
+- [x] 内嵌8x16 VGA位图字体（ASCII 32–126）
+- [x] `kernel_early_main`：`fb_init` 后绘制测试图案 → 串口 `[fb] fb_smoke_done`
+- [x] `make smoke-fb`（独立，不挡 CLI/net smoke）
+
+**注意**：MSYS2/ArchLinux/Ubuntu 打包的 OVMF（4MB 版本）不包含 QemuVideoDxe GOP 驱动，
+`LocateProtocol` 会返回 `EFI_NOT_FOUND`。代码会 graceful fallback 到 headless 模式。
+使用 QEMU 原生 OVMF（8MB+）或真机固件时 GOP 正常工作。
+
+**验证**：`make smoke-fb` 串口含 `M9 framebuffer ready` + `fb_smoke_done`；QEMU 窗口可见蓝/红矩形 + 白色文字。
+
+---
+
 ## 文档债务（随里程碑）
 
 - 每完成一阶段：更新本文件状态勾选与 `ARCHITECTURE.md` 中对应子系统

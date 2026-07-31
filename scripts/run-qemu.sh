@@ -50,6 +50,8 @@ find_ovmf_code() {
   local c
   for c in \
     "${OVMF_CODE:-}" \
+    "$ROOT/third_party/ovmf-ubuntu/usr/share/OVMF/OVMF_CODE_4M.fd" \
+    "$ROOT/third_party/ovmf/usr/share/edk2/x64/OVMF_CODE.4m.fd" \
     "/mingw64/share/qemu/edk2-x86_64-code.fd" \
     "/c/msys64/mingw64/share/qemu/edk2-x86_64-code.fd" \
     "/usr/share/OVMF/OVMF_CODE.fd" \
@@ -76,6 +78,8 @@ find_ovmf_vars() {
   local c
   for c in \
     "${OVMF_VARS:-}" \
+    "$ROOT/third_party/ovmf-ubuntu/usr/share/OVMF/OVMF_VARS_4M.fd" \
+    "$ROOT/third_party/ovmf/usr/share/edk2/x64/OVMF_VARS.4m.fd" \
     "/mingw64/share/qemu/edk2-i386-vars.fd" \
     "/c/msys64/mingw64/share/qemu/edk2-i386-vars.fd" \
     "/usr/share/OVMF/OVMF_VARS.fd" \
@@ -138,7 +142,7 @@ echo "ESP_IMG   = $DISK_ARG"
 echo "serial    → stdio + $LOG_ARG"
 echo
 
-QEMU_DISPLAY_ARGS=(-display gtk)
+QEMU_DISPLAY_ARGS=(-display gtk -device VGA)
 if [[ "${HEADLESS:-0}" == "1" ]] || [[ "${DISPLAY_MODE:-}" == "nographic" ]]; then
   QEMU_DISPLAY_ARGS=(-display none)
 fi

@@ -17,6 +17,7 @@
 #include "helix/string.h"
 #include "helix/cpuio.h"
 #include "helix/net.h"
+#include "helix/fb.h"
 
 void kernel_idle_loop(void)
 {
@@ -71,6 +72,18 @@ void kernel_early_main(struct helix_boot_info *info)
 
     if (heap_init() != 0)
         panic("heap_init failed");
+
+    if (fb_init(info) == 0) {
+        kprintf("[Helix] M9 framebuffer ready\n");
+        /* M9 smoke: draw test pattern on screen */
+        fb_cls(0x00202020);  /* dark grey background */
+        fb_rect(32, 32, 200, 80, 0x004080C0);  /* blue rectangle */
+        fb_rect(32, 120, 200, 80, 0x00C04040);  /* red rectangle */
+        fb_puts(32, 216, "HelixOS M9 framebuffer OK", 0x00FFFFFF, 0x00202020);
+        kprintf("[fb] fb_smoke_done\n");
+    } else {
+        kprintf("[Helix] M9 no framebuffer (continuing headless)\n");
+    }
 
     u64 a = pmm_alloc_page();
     u64 b = pmm_alloc_page();

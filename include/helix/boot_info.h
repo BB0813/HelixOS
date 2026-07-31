@@ -19,6 +19,14 @@ struct helix_boot_info {
     u64 image_base;     /* best-effort; 0 if unknown */
     u64 image_size;
     u64 kernel_stack_top; /* if non-zero, early main may assume RSP already set */
+
+    /* M9 framebuffer (GOP) — 0 if unavailable */
+    u64 fb_addr;        /* physical base address */
+    u64 fb_size;        /* total bytes */
+    u32 fb_width;       /* horizontal resolution */
+    u32 fb_height;      /* vertical resolution */
+    u32 fb_pitch;       /* bytes per scanline */
+    u32 fb_bpp;         /* bits per pixel (32 expected) */
 };
 
 void kernel_early_main(struct helix_boot_info *info);

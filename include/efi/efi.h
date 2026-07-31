@@ -15,6 +15,7 @@ typedef void      *EFI_HANDLE;
 typedef void      *EFI_EVENT;
 typedef uint64_t  EFI_PHYSICAL_ADDRESS;
 typedef uint64_t  EFI_VIRTUAL_ADDRESS;
+typedef struct { uint32_t Data1; uint16_t Data2; uint16_t Data3; uint8_t Data4[8]; } EFI_GUID;
 
 #define EFIAPI __attribute__((ms_abi))
 
@@ -136,6 +137,20 @@ typedef EFI_STATUS (EFIAPI *EFI_ALLOCATE_POOL)(
 
 typedef EFI_STATUS (EFIAPI *EFI_FREE_POOL)(void *Buffer);
 
+typedef EFI_STATUS (EFIAPI *EFI_HANDLE_PROTOCOL)(
+    EFI_HANDLE Handle, EFI_GUID *Protocol, void **Interface);
+
+typedef EFI_STATUS (EFIAPI *EFI_LOCATE_PROTOCOL)(
+    EFI_GUID *Protocol, void *Registration, void **Interface);
+
+typedef EFI_STATUS (EFIAPI *EFI_LOCATE_HANDLE)(
+    int SearchType, EFI_GUID *Protocol, void *Key,
+    UINTN *Size, EFI_HANDLE *Handles);
+
+typedef EFI_STATUS (EFIAPI *EFI_LOCATE_HANDLE_BUFFER)(
+    int SearchType, EFI_GUID *Protocol, void *Key,
+    UINTN *NoHandles, EFI_HANDLE **Handles);
+
 typedef EFI_STATUS (EFIAPI *EFI_EXIT_BOOT_SERVICES)(
     EFI_HANDLE ImageHandle,
     UINTN MapKey);
@@ -147,6 +162,17 @@ typedef EFI_STATUS (EFIAPI *EFI_SET_WATCHDOG_TIMER)(
     uint64_t WatchdogCode,
     UINTN DataSize,
     CHAR16 *WatchdogData);
+
+typedef EFI_STATUS (EFIAPI *EFI_CONNECT_CONTROLLER)(
+    EFI_HANDLE ControllerHandle,
+    EFI_HANDLE *DriverImageHandle,
+    void *RemainingDevicePath,
+    BOOLEAN Recursive);
+
+typedef EFI_STATUS (EFIAPI *EFI_LOCATE_DEVICE_PATH)(
+    EFI_GUID *Protocol,
+    void *DevicePath,
+    EFI_HANDLE *Device);
 
 struct EFI_BOOT_SERVICES {
     EFI_TABLE_HEADER Hdr;
@@ -166,10 +192,10 @@ struct EFI_BOOT_SERVICES {
     void *InstallProtocolInterface;
     void *ReinstallProtocolInterface;
     void *UninstallProtocolInterface;
-    void *HandleProtocol;
+    EFI_HANDLE_PROTOCOL HandleProtocol;
     void *Reserved;
     void *RegisterProtocolNotify;
-    void *LocateHandle;
+    EFI_LOCATE_HANDLE LocateHandle;
     void *LocateDevicePath;
     void *InstallConfigurationTable;
     void *LoadImage;
@@ -180,6 +206,20 @@ struct EFI_BOOT_SERVICES {
     void *GetNextMonotonicCount;
     EFI_STALL Stall;
     EFI_SET_WATCHDOG_TIMER SetWatchdogTimer;
+    EFI_CONNECT_CONTROLLER ConnectController;
+    void *DisconnectController;
+    void *OpenProtocol;
+    void *CloseProtocol;
+    void *OpenProtocolInformation;
+    void *ProtocolsPerHandle;
+    EFI_LOCATE_HANDLE_BUFFER LocateHandleBuffer;
+    EFI_LOCATE_PROTOCOL LocateProtocol;
+    void *InstallMultipleProtocolInterfaces;
+    void *UninstallMultipleProtocolInterfaces;
+    void *CalculateCrc32;
+    void *CopyMem;
+    void *SetMem;
+    void *CreateEventEx;
 };
 
 struct EFI_RUNTIME_SERVICES {
@@ -207,3 +247,52 @@ struct EFI_SYSTEM_TABLE {
     UINTN NumberOfTableEntries;
     EFI_CONFIGURATION_TABLE *ConfigurationTable;
 };
+
+/* ---- EFI Graphics Output Protocol (GOP) ---- */
+
+typedef struct {
+    uint32_t RedMask, GreenMask, BlueMask, ReservedMask;
+} EFI_PIXEL_BITMASK;
+
+typedef enum {
+    PixelRedGreenBlueReserved8BitPerColor,
+    PixelBlueGreenRedReserved8BitPerColor,
+    PixelBitMask,
+    PixelBltOnly,
+    PixelFormatMax
+} EFI_GRAPHICS_PIXEL_FORMAT;
+
+typedef struct {
+    uint32_t Version;
+    uint32_t HorizontalResolution;
+    uint32_t VerticalResolution;
+    EFI_GRAPHICS_PIXEL_FORMAT PixelFormat;
+    EFI_PIXEL_BITMASK PixelInformation;
+    uint32_t PixelsPerScanLine;
+} EFI_GRAPHICS_OUTPUT_MODE_INFORMATION;
+
+typedef struct {
+    uint32_t MaxMode;
+    uint32_t Mode;
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *Info;
+    uint64_t SizeOfInfo;
+    EFI_PHYSICAL_ADDRESS FrameBufferBase;
+    uint64_t FrameBufferSize;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE;
+
+typedef EFI_STATUS (EFIAPI *EFI_GRAPHICS_OUTPUT_PROTOCOL_QUERY_MODE)(
+    void *This, uint32_t ModeNumber, uint64_t *InfoSize,
+    EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **Info);
+
+typedef EFI_STATUS (EFIAPI *EFI_GRAPHICS_OUTPUT_PROTOCOL_SET_MODE)(
+    void *This, uint32_t ModeNumber);
+
+typedef struct {
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_QUERY_MODE QueryMode;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_SET_MODE SetMode;
+    void *Blt;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *Mode;
+} EFI_GRAPHICS_OUTPUT_PROTOCOL;
+
+#define EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID \
+    {0x9042a9de,0x23dc,0x4a38,{0x96,0xfb,0x72,0xde,0x31,0xc6,0x52,0xa7}}
