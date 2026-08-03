@@ -17,7 +17,20 @@
 #include "helix/timer.h"
 #include "helix/heap.h"
 
+/* M17 retransmission constants */
+#define TCP_RETRANS_TIMEOUT_TICKS  100  /* 1 second at 100Hz */
+#define TCP_RETRANS_MAX_RETRIES    3
+
 #define TCP_SOCK_MAX       8
+#define TCP_PENDING_MAX    4  /* SYNReceived children waiting for a listener */
+
+struct tcp_pending_child {
+    struct helix_tcp_sock *sock;
+    int has_ack;        /* ACK received before listener existed */
+    u32 ack_seq;        /* ACK's seq value */
+    int data_len;       /* data received before listener existed */
+    u8  data[1400];     /* buffered data */
+};
 
 /* Packed TCP header */
 struct tcp_hdr {
@@ -38,6 +51,8 @@ extern u32  net_local_ip_be(void);
 extern int  ip_send(u32 dst_host, u8 proto, const void *payload, u32 plen);
 
 static struct helix_tcp_sock g_tcp_socks[TCP_SOCK_MAX];
+static struct tcp_pending_child g_tcp_pending[TCP_PENDING_MAX];
+static int g_tcp_pending_count;
 static u16 g_tcp_ephemeral = 41000; /* host order; next ephemeral port */
 
 static u16 htons16(u16 x) { return (u16)((x << 8) | (x >> 8)); }
@@ -168,6 +183,45 @@ int tcp_listen(struct helix_tcp_sock *ts, u16 port_be) {
     }
     ts->state = TCP_STATE_LISTEN;
     ts->backlog_len = 0;
+
+    /* M17: adopt any pending SYN_RECEIVED children for this port */
+    for (int i = 0; i < g_tcp_pending_count; i++) {
+        struct tcp_pending_child *pc = &g_tcp_pending[i];
+        if (pc->sock && pc->sock->lport_be == ts->lport_be && ts->backlog_len < TCP_CONN_BACKLOG) {
+            struct helix_tcp_sock *child = pc->sock;
+            child->parent = ts;
+            if (pc->has_ack) {
+                /* Client ACK was received before listener — transition to ESTABLISHED */
+                child->state = TCP_STATE_ESTABLISHED;
+                child->rcv_nxt = pc->ack_seq;
+                child->snd_una = pc->ack_seq;
+                child->snd_nxt = pc->ack_seq;
+            }
+            /* Deliver any data that arrived before the listener existed */
+            if (pc->data_len > 0 && child->rx_count < 8) {
+                struct tcp_rx_seg *seg = &child->rxq[child->rx_tail];
+                seg->seq = child->rcv_nxt;
+                seg->len = (u32)pc->data_len;
+                memcpy(seg->data, pc->data, (u32)pc->data_len);
+                child->rx_tail = (u16)((child->rx_tail + 1) % 8);
+                child->rx_count++;
+                child->rcv_nxt += (u32)pc->data_len;
+                kprintf("[tcp] adopted: delivered %d pending bytes\n", pc->data_len);
+            }
+            ts->backlog[ts->backlog_len++] = child;
+            kprintf("[tcp] adopted pending child from port %u into backlog\n", (unsigned)ntohs16(child->rport_be));
+        }
+    }
+    /* compact pending array */
+    {
+        int w = 0;
+        for (int i = 0; i < g_tcp_pending_count; i++) {
+            if (g_tcp_pending[i].sock && g_tcp_pending[i].sock->lport_be != ts->lport_be)
+                g_tcp_pending[w++] = g_tcp_pending[i];
+        }
+        g_tcp_pending_count = w;
+    }
+
     kprintf("[tcp] listening on port %u\n", (unsigned)ntohs16(ts->lport_be));
     return 0;
 }
@@ -191,8 +245,23 @@ int tcp_send_data(struct helix_tcp_sock *ts, const void *data, u32 len) {
     if (!ts || ts->state != TCP_STATE_ESTABLISHED) return -22;
     if (len == 0) return 0;
     if (len > 1400) len = 1400;
+
+    /* M17: queue to TXQ before sending */
+    if (ts->tx_count < 4) {
+        struct tcp_tx_seg *tx = &ts->txq[ts->tx_tail];
+        tx->seq = ts->snd_nxt;
+        tx->len = len;
+        memcpy(tx->data, data, len);
+        tx->retries = 0;
+        ts->tx_tail = (ts->tx_tail + 1) % 4;
+        ts->tx_count++;
+    }
+
     kprintf("[tcp] send %u bytes\n", (unsigned)len);
-    return tcp_send_segment(ts, TCP_FLAG_PSH | TCP_FLAG_ACK, ts->snd_nxt, ts->rcv_nxt, data, len);
+    ts->last_send_tick = timer_ticks();
+    int ret = tcp_send_segment(ts, TCP_FLAG_PSH | TCP_FLAG_ACK, ts->snd_nxt, ts->rcv_nxt, data, len);
+    ts->snd_nxt += len;
+    return ret;
 }
 
 /* ---- recv (non-blocking; returns -EAGAIN if empty) ---- */
@@ -258,8 +327,47 @@ void tcp_input(u32 src_be, u32 dst_be_ignored, const u8 *tcp_pkt, u32 tcp_len) {
         }
     }
 
-    if (!ts) { /* no socket — send RST */
-        kprintf("[tcp] no listener for port %u\n", (unsigned)ntohs16(dport_be));
+    if (!ts) { /* no socket — hold as pending child, or deliver to existing pending child */
+        /* Check if this packet belongs to an existing pending child */
+        for (int i = 0; i < g_tcp_pending_count; i++) {
+            struct tcp_pending_child *pc = &g_tcp_pending[i];
+            if (pc->sock && pc->sock->rport_be == sport_be && pc->sock->lport_be == dport_be) {
+                if ((flags & TCP_FLAG_ACK) && !(flags & TCP_FLAG_SYN)) {
+                    pc->has_ack = 1;
+                    pc->ack_seq = seq;
+                    kprintf("[tcp] PENDING: ACK received, seq=%u\n", seq);
+                }
+                if (plen > 0 && pc->data_len == 0 && plen <= sizeof(pc->data)) {
+                    memcpy(pc->data, payload, plen);
+                    pc->data_len = (int)plen;
+                    kprintf("[tcp] PENDING: data received (%u bytes)\n", (unsigned)plen);
+                }
+                return;
+            }
+        }
+        /* New SYN — create pending child */
+        if ((flags & TCP_FLAG_SYN) && !(flags & TCP_FLAG_ACK) && g_tcp_pending_count < TCP_PENDING_MAX) {
+            struct helix_tcp_sock *child = tcp_alloc_conn();
+            if (child) {
+                child->laddr_be = net_local_ip_be();
+                child->lport_be = dport_be;
+                child->raddr_be = src_be;
+                child->rport_be = sport_be;
+                child->bound = 0;
+                child->state = TCP_STATE_SYN_RECEIVED;
+                child->rcv_nxt = seq + 1;
+                child->iss = (u32)(timer_ticks() * 997);
+                child->snd_nxt = child->iss;
+                child->snd_una = child->iss;
+                child->parent = 0;
+                struct tcp_pending_child *pc = &g_tcp_pending[g_tcp_pending_count++];
+                pc->sock = child;
+                pc->has_ack = 0;
+                pc->data_len = 0;
+                kprintf("[tcp] PENDING SYN from port %u\n", (unsigned)ntohs16(sport_be));
+                tcp_send_segment(child, TCP_FLAG_SYN | TCP_FLAG_ACK, child->snd_nxt, child->rcv_nxt, 0, 0);
+            }
+        }
         return;
     }
 
@@ -314,6 +422,18 @@ void tcp_input(u32 src_be, u32 dst_be_ignored, const u8 *tcp_pkt, u32 tcp_len) {
 
     /* ESTABLISHED: data or ACK or FIN */
     if (ts->state == TCP_STATE_ESTABLISHED) {
+        /* M17: ACK — advance snd_una, drain confirmed TXQ entries */
+        if (flags & TCP_FLAG_ACK) {
+            if (ack > ts->snd_una)
+                ts->snd_una = ack;
+            while (ts->tx_count > 0) {
+                struct tcp_tx_seg *oldest = &ts->txq[ts->tx_head];
+                if (oldest->seq + oldest->len <= ts->snd_una) {
+                    ts->tx_head = (ts->tx_head + 1) % 4;
+                    ts->tx_count--;
+                } else break;
+            }
+        }
         /* Incoming data */
         if (plen > 0 && ts->rx_count < 8) {
             struct tcp_rx_seg *seg = &ts->rxq[ts->rx_tail];
@@ -361,10 +481,50 @@ void tcp_input(u32 src_be, u32 dst_be_ignored, const u8 *tcp_pkt, u32 tcp_len) {
     }
 }
 
+/* ---- M17: retransmit timed-out segments ---- */
+void tcp_retransmit(void) {
+    u64 now = timer_ticks();
+    for (int i = 0; i < TCP_SOCK_MAX; i++) {
+        struct helix_tcp_sock *ts = &g_tcp_socks[i];
+        if (!ts->used) continue;
+        if (ts->state != TCP_STATE_ESTABLISHED && ts->state != TCP_STATE_FIN_WAIT_1)
+            continue;
+        if (ts->tx_count == 0) continue;
+        if (now - ts->last_send_tick < TCP_RETRANS_TIMEOUT_TICKS) continue;
+
+        /* Resend all unacked segments */
+        kprintf("[tcp] retransmit socket %d (tx_count=%u)\n", i, (unsigned)ts->tx_count);
+        int dropped = 0;
+        for (u16 idx = ts->tx_head; idx != ts->tx_tail; idx = (idx + 1) % 4) {
+            struct tcp_tx_seg *tx = &ts->txq[idx];
+            tx->retries++;
+            if (tx->retries > TCP_RETRANS_MAX_RETRIES) {
+                kprintf("[tcp] retransmit: max retries exceeded, closing socket %d\n", i);
+                memset(ts, 0, sizeof(*ts));
+                dropped = 1;
+                break;
+            }
+            kprintf("[tcp] retransmit: resend seq=%u len=%u retries=%u\n",
+                    tx->seq, tx->len, (unsigned)tx->retries);
+            tcp_send_segment(ts, TCP_FLAG_PSH | TCP_FLAG_ACK, tx->seq, ts->rcv_nxt, tx->data, tx->len);
+        }
+        if (!dropped)
+            ts->last_send_tick = now;
+    }
+}
+
 /* ---- helper: add known ports for dedicated listeners ---- */
 void tcp_init(void)
 {
-    memset(g_tcp_socks, 0, sizeof(g_tcp_socks));
+    /* M17: only clear unbound sockets — preserve listeners set up during userland smoke */
+    for (int i = 0; i < TCP_SOCK_MAX; i++) {
+        if (g_tcp_socks[i].used && g_tcp_socks[i].bound)
+            continue; /* keep active listener */
+        memset(&g_tcp_socks[i], 0, sizeof(g_tcp_socks[i]));
+    }
     g_tcp_ephemeral = 41000;
-    kprintf("[tcp] M14 TCP module ready\n");
+    kprintf("[tcp] M14 TCP module ready (socks:");
+    for (int i = 0; i < TCP_SOCK_MAX; i++)
+        if (g_tcp_socks[i].used) kprintf(" %d:state=%d", i, g_tcp_socks[i].state);
+    kprintf(")\n");
 }

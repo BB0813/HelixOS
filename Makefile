@@ -59,7 +59,8 @@ C_SRCS := \
 
 S_SRCS := \
 	kernel/arch/x86_64/isr_stubs.S \
-	kernel/arch/x86_64/syscall_entry.S
+	kernel/arch/x86_64/syscall_entry.S \
+	libk/chkstk.S
 
 C_OBJS := $(patsubst %.c,$(BUILD)/%.o,$(C_SRCS))
 S_OBJS := $(patsubst %.S,$(BUILD)/%.o,$(S_SRCS))
@@ -215,7 +216,7 @@ clean:
 
 smoke-net: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
-	@python $(ROOT)/scripts/tcp_echo_server.py & TCP_PID=$$!; python $(ROOT)/scripts/tcp_host_client.py 2>/dev/null & TCP_CLIENT_PID=$$!; sleep 1; HEADLESS=1 TIMEOUT_SECS=120 bash $(ROOT)/scripts/run-qemu.sh || true; kill $$TCP_PID 2>/dev/null || true; kill $$TCP_CLIENT_PID 2>/dev/null || true
+	@python $(ROOT)/scripts/tcp_echo_server.py & TCP_PID=$$!; HEADLESS=1 TIMEOUT_SECS=120 bash $(ROOT)/scripts/run-qemu.sh & QEMU_PID=$$!; sleep 8; python $(ROOT)/scripts/tcp_host_client.py 2>/dev/null & TCP_CLIENT_PID=$$!; wait $$QEMU_PID 2>/dev/null || true; kill $$TCP_PID 2>/dev/null || true; kill $$TCP_CLIENT_PID 2>/dev/null || true
 	@grep -a -F -q "M7 net ready" $(ROOT)/serial.log || { echo SMOKE-NET FAIL M7; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "10.0.2.15" $(ROOT)/serial.log || { echo SMOKE-NET FAIL IP; exit 1; }
 	@grep -a -F -q "HelixNetOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixNetOK; cat $(ROOT)/serial.log; exit 1; }

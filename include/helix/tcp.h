@@ -73,6 +73,24 @@ struct helix_tcp_sock {
     struct helix_tcp_sock *backlog[TCP_CONN_BACKLOG];
     int  backlog_len;
 
+    /* Retransmission timer */
+    u64  last_send_tick;      /* last time data was sent (for retransmit timer) */
+
     /* Parent socket (for accepted connections) */
     struct helix_tcp_sock *parent;
 };
+
+/* TCP API (used by syscall.c, net.c) */
+struct helix_tcp_sock *tcp_alloc_conn(void);
+void  tcp_free(struct helix_tcp_sock *ts);
+struct helix_tcp_sock *tcp_find_bound(u16 port_be);
+int   tcp_bind(struct helix_tcp_sock *ts, u32 addr_be, u16 port_be);
+int   tcp_connect(struct helix_tcp_sock *ts, u32 raddr_be, u16 rport_be);
+int   tcp_listen(struct helix_tcp_sock *ts, u16 port_be);
+struct helix_tcp_sock *tcp_accept(struct helix_tcp_sock *listen_sock);
+int   tcp_send_data(struct helix_tcp_sock *ts, const void *data, u32 len);
+int   tcp_recv_data(struct helix_tcp_sock *ts, void *buf, u32 buflen);
+int   tcp_close(struct helix_tcp_sock *ts);
+void  tcp_input(u32 src_be, u32 dst_be, const u8 *tcp_pkt, u32 tcp_len);
+void  tcp_init(void);
+void  tcp_retransmit(void);

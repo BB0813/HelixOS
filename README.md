@@ -25,7 +25,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M14 已完成**（2026-08-01）
+**M0–M17 已完成**（2026-08-03）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -43,6 +43,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M14 | **TCP 全栈**（state machine + connect/accept/listen） | **`HelixTcpOK`** |
 | M15 | TCP 用户态 echo（sendto/recvfrom TCP 路由） | **`HelixTcpUserOK`** |
 | M16 | sendmsg/recvmsg + TCP passive hostfwd echo | **`HelixTcpPassiveOK`** |
+| M17 | TCP retransmission（TXQ 入队 + ACK 清除 + 定时器） | **`HelixTcpOK`** |
 
 ## 快速开始
 

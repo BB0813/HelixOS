@@ -479,4 +479,8 @@ void net_poll(void)
         tcp_init();
         kprintf("[net] M14 TCP stack ready — HelixTcpOK\n");
     }
+
+    /* M17: drive TCP retransmission timer */
+    extern void tcp_retransmit(void);
+    tcp_retransmit();
 }

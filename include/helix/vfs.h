@@ -25,6 +25,7 @@ struct vfs_file {
     int   writable;
     int   is_socket;  /* 1 = fs_priv is helix_sock* */
     int   refcount;   /* fd slots referencing this file (M11 pipe/shell) */
+    int   flags;      /* fcntl flags (O_NONBLOCK etc.) */
 };
 
 struct vfs_ops {

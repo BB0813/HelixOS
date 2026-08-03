@@ -279,15 +279,17 @@ static i64 sys_ioctl(u64 fd, u64 req, u64 arg)
 
 static i64 sys_fcntl(u64 fd, u64 cmd, u64 arg)
 {
-    (void)arg;
     fd_init_task_stdio();
-    if (!fd_get((int)fd))
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f)
         return ERR(EBADF);
     if (cmd == 1) /* F_GETFD */
         return 0;
     if (cmd == 3) /* F_GETFL */
-        return 0;
-    return 0; /* soft stub */
+        return f->flags;
+    if (cmd == 4) /* F_SETFL */
+        f->flags = (int)arg;
+    return 0;
 }
 
 static i64 sys_dup2(u64 oldfd, u64 newfd)

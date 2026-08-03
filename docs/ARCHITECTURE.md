@@ -172,7 +172,7 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 | 图形 | M9 **done** | GOP fb + headless fallback |
 | 进程 | M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
 | 信号 | **M13 done** | kill/sigaction/SIGCHLD/SIGINT |
-| TCP | **M14–M16 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；sendmsg/recvmsg + passive hostfwd（M16） |
+| TCP | **M14–M17 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；sendmsg/recvmsg + passive hostfwd（M16）；TXQ retransmit（M17） |
 
 ## ABI policy
 

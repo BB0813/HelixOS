@@ -280,3 +280,25 @@ Goal：[`docs/GOAL_M14.md`](GOAL_M14.md)
 
 ---
 
+## M17 — TCP retransmission (TXQ 驱动) `[x]`
+
+Goal: [`docs/GOAL_M17.md`](GOAL_M17.md)
+
+- [x] `helix_tcp_sock` 增加 `last_send_tick` 字段
+- [x] `tcp_send_data()` 数据段入 TXQ 环形队列 + 更新 `snd_nxt`
+- [x] `tcp_input()` ESTABLISHED ACK 清除已确认 TXQ 条目 + 推进 `snd_una`
+- [x] `tcp_retransmit()` 新函数：1 秒超时重发，最大 3 次重试
+- [x] `net_poll()` 调用 `tcp_retransmit()`
+- [x] tcp.h 增加 TCP API 函数声明（消除 syscall.c implicit declaration 报错）
+- [x] `libk/chkstk.S` 修复 Windows PE 链接 `__chkstk` 未定义符号
+- [x] `tcp_init()` 保留已绑定 socket（不清理 active listener）
+- [x] `fd_close()` 修复：TCP socket 调用 `tcp_free()` 而非 UDP 专用 `net_sock_free()`
+- [x] `vfs_file` 增加 `flags` 字段 + `sys_fcntl` F_SETFL 实现（O_NONBLOCK 支持）
+- [x] TCP 被动 pending 队列：SYN 到达但 listener 未创建时暂存 child；listener 建立后自动 adopt
+- [x] Pending child 缓冲 ACK/data：listener 创建前到达的包暂存，创建后一次性注入 rxq
+- [x] helixbox TCP passive fork 子进程 + 更长 accept 循环
+
+**验收**：`make smoke-net` 串口含 `HelixTcpOK` + `user_udp_ok`；`fd_close` TCP socket 不再泄漏内存；pending SYN 队列正确工作。
+
+---
+

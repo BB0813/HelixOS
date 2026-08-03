@@ -235,7 +235,7 @@ static void cmd_tcp_smoke(void)
     for (int i = 0; i < 100 && r < 0; i++) {
         r = usys(SYS_connect, sfd, (long)sa, 16);
         if (r < 0)
-            usys(SYS_yield, 0, 0, 0);
+            for (int j = 0; j < 5000; j++) usys(SYS_yield, 0, 0, 0);
     }
     if (r < 0) {
         xwrite("tcp_smoke: connect fail\n");
@@ -243,13 +243,13 @@ static void cmd_tcp_smoke(void)
         return;
     }
 
-    /* Poll for ESTABLISHED (SYN/ACK exchange) — up to ~10s */
-    for (int i = 0; i < 1000; i++) {
+    /* Poll for ESTABLISHED (SYN/ACK exchange) — ~10s wall-clock */
+    for (int i = 0; i < 100; i++) {
         const char *payload = "HELIX_TCP_PING";
         long plen = 0; while (payload[plen]) plen++;
         r = usys6(SYS_sendto, sfd, (long)payload, plen, 0, (long)sa, 16);
         if (r >= 0) break; /* success — data sent */
-        usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
     }
 
     if (r < 0) {
@@ -258,10 +258,10 @@ static void cmd_tcp_smoke(void)
         return;
     }
 
-    /* Recv ECHO reply — up to ~10s */
+    /* Recv ECHO reply — ~10s wall-clock */
     char rbuf[128];
     int ok = 0;
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 100; i++) {
         long nr = usys6(SYS_recvfrom, sfd, (long)rbuf, 128, 0, 0, 0);
         if (nr > 0) {
             const char *expect = "ECHO:HELIX_TCP_PING";
@@ -270,7 +270,7 @@ static void cmd_tcp_smoke(void)
                 if (rbuf[j] != expect[j]) { ok = 0; break; }
             break;
         }
-        usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
     }
     if (ok)
         xwrite("HelixTcpUserOK\n");
@@ -294,7 +294,7 @@ static void cmd_tcp_passive_smoke(void)
     long r = usys(SYS_bind, lfd, (long)sa, 16);
     if (r < 0) { xwrite("tcp_passive: bind fail\n"); usys(SYS_close, lfd, 0, 0); return; }
 
-    r = usys(SYS_listen, lfd, 4);
+    r = usys(SYS_listen, lfd, 4, 0);
     if (r < 0) { xwrite("tcp_passive: listen fail\n"); usys(SYS_close, lfd, 0, 0); return; }
 
     xwrite("tcp_passive: listening on 8081\n");
@@ -302,12 +302,12 @@ static void cmd_tcp_passive_smoke(void)
     /* Non-blocking: fcntl(fd, F_SETFL, O_NONBLOCK) */
     usys(72, lfd, 4, 2048);
 
-    /* Poll for incoming connection — up to ~20s */
+    /* Poll for incoming connection — ~30s wall-clock to match host client retry window */
     long cfd = -1;
-    for (int i = 0; i < 2000; i++) {
+    for (int i = 0; i < 1000; i++) {
         cfd = usys(SYS_accept, lfd, 0, 0);
         if (cfd >= 0) break;
-        usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
     }
 
     if (cfd < 0) {
@@ -321,13 +321,13 @@ static void cmd_tcp_passive_smoke(void)
     /* Set client socket non-blocking */
     usys(72, cfd, 4, 2048);
 
-    /* Poll for incoming data — up to ~10s */
+    /* Poll for incoming data — ~10s wall-clock (inner delay loop) */
     char rbuf[128];
     int nr = 0;
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 100; i++) {
         nr = (int)usys(SYS_read, cfd, (long)rbuf, sizeof(rbuf));
         if (nr > 0) break;
-        usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
     }
 
     if (nr <= 0) {
@@ -588,11 +588,19 @@ done_sock:
 
 host_udp:
 
+    /* M16: TCP passive smoke — fork child FIRST so listener is up before SLiRP gives up */
+    {
+        long child = usys(SYS_fork, 0, 0, 0);
+        if (child == 0) {
+            /* Child: run TCP passive listener in background */
+            cmd_tcp_passive_smoke();
+            usys(SYS_exit, 0, 0, 0);
+        }
+        /* Parent continues — child handles listener in background */
+    }
+
     /* M15: TCP smoke — connect to host echo server via QEMU hostfwd */
     cmd_tcp_smoke();
-
-    /* M16: TCP passive smoke — guest listens on 8081, host client connects */
-    cmd_tcp_passive_smoke();
 
     /* M8: host ↔ guest UDP ping via QEMU port forward */
     {

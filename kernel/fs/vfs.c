@@ -376,8 +376,14 @@ int fd_close(int fd)
     if (f->refcount > 0)
         return 0; /* still referenced elsewhere (dup2 / fork) */
     if (f->is_socket) {
-        extern void net_sock_free(void *s);
-        net_sock_free(f->fs_priv);
+        if (f->is_socket == 2) {
+            /* TCP socket — use tcp_free for correct struct size */
+            extern void tcp_free(void *s);
+            tcp_free(f->fs_priv);
+        } else {
+            extern void net_sock_free(void *s);
+            net_sock_free(f->fs_priv);
+        }
         extern void kfree(void *ptr);
         kfree(f);
         return 0;
