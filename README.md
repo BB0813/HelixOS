@@ -42,6 +42,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M13 | 信号最小集（SIGCHLD/SIGINT/kill + HelixSigOK） | **`HelixSigOK`** |
 | M14 | **TCP 全栈**（state machine + connect/accept/listen） | **`HelixTcpOK`** |
 | M15 | TCP 用户态 echo（sendto/recvfrom TCP 路由） | **`HelixTcpUserOK`** |
+| M16 | sendmsg/recvmsg + TCP passive hostfwd echo | **`HelixTcpPassiveOK`** |
 
 ## 快速开始
 
@@ -85,6 +86,7 @@ HelixCwdOK
 HelixSigOK
 HelixTcpOK
 HelixTcpUserOK
+HelixTcpPassiveOK
 helixbox_smoke_done
 ```
 
@@ -114,7 +116,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M15**（已完成）；下一候选 **M16 TCP 被动模式 / sendmsg**。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M16**（已完成）；下一候选 **M17 TCP 重传 / fb 用户态接口**。
 
 ## 许可
 

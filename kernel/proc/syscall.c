@@ -856,17 +856,140 @@ static i64 sys_listen(u64 fd, u64 backlog)
     return r < 0 ? ERR(-r) : 0;
 }
 
-static i64 sys_sendmsg_stub(u64 fd, u64 msg, u64 flags)
+/*
+ * struct msghdr (x86_64 Linux):
+ *   +0  void *msg_name        +8  socklen_t msg_namelen
+ *  +16  struct iovec *msg_iov +24 size_t    msg_iovlen
+ *  +32  void *msg_control    +40 size_t    msg_controllen
+ *  +48  int msg_flags
+ *
+ * struct iovec: +0 void *iov_base  +8 size_t iov_len
+ */
+static i64 sys_sendmsg(u64 fd, u64 msg, u64 flags)
 {
-    (void)fd; (void)msg; (void)flags;
-    /* M14: map sendmsg to send (simple) — for TCP send path */
-    return ERR(ENOSYS);
+    (void)flags;
+    if (!user_ptr_ok((void *)(uintptr_t)msg, 56))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || !f->is_socket)
+        return ERR(ENOTSOCK);
+
+    const u8 *m = (const u8 *)(uintptr_t)msg;
+    const void *name     = *(const void **)(m);
+    u64        namelen   = *(u64 *)(m + 8);
+    const void *iovp     = *(const void **)(m + 16);
+    u64        iovlen    = *(u64 *)(m + 24);
+
+    if (name && !user_ptr_ok(name, namelen))
+        return ERR(EFAULT);
+
+    /* Coalesce all iovecs into a single kernel buffer */
+    u8 kbuf[4096];
+    u32 total = 0;
+    for (u64 i = 0; i < iovlen; i++) {
+        if (!user_ptr_ok((const void *)(uintptr_t)iovp, i * 16 + 16))
+            return ERR(EFAULT);
+        const u8 *iov = (const u8 *)(uintptr_t)iovp + i * 16;
+        const void *base = *(const void **)iov;
+        u64 len = *(u64 *)(iov + 8);
+        if (len == 0) continue;
+        if (!user_ptr_ok(base, len))
+            return ERR(EFAULT);
+        if (total + len > sizeof(kbuf))
+            len = sizeof(kbuf) - total;
+        memcpy(kbuf + total, base, (u32)len);
+        total += (u32)len;
+    }
+    if (total == 0)
+        return 0;
+
+    if (f->is_socket == 2) {
+        struct helix_tcp_sock *ts = (struct helix_tcp_sock *)f->fs_priv;
+        return tcp_send_data(ts, kbuf, total);
+    }
+    /* UDP: parse destination from msg_name */
+    const u8 *sa = (const u8 *)name;
+    u16 port_be = (u16)sa[2] | ((u16)sa[3] << 8);
+    u32 addr_be = (u32)sa[4] | ((u32)sa[5] << 8) |
+                  ((u32)sa[6] << 16) | ((u32)sa[7] << 24);
+    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
+    return net_sock_sendto(s, kbuf, total, addr_be, port_be);
 }
 
-static i64 sys_recvmsg_stub(u64 fd, u64 msg, u64 flags)
+static i64 sys_recvmsg(u64 fd, u64 msg, u64 flags)
 {
-    (void)fd; (void)msg; (void)flags;
-    return ERR(ENOSYS);
+    (void)flags;
+    if (!user_ptr_ok((void *)(uintptr_t)msg, 56))
+        return ERR(EFAULT);
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f || !f->is_socket)
+        return ERR(ENOTSOCK);
+
+    u8 *m = (u8 *)(uintptr_t)msg;
+    void  *name      = *(void **)(m);
+    u64   namelen    = *(u64 *)(m + 8);
+    void  *iovp      = *(void **)(m + 16);
+    u64   iovlen     = *(u64 *)(m + 24);
+
+    if (name && !user_ptr_ok(name, namelen))
+        return ERR(EFAULT);
+
+    u8 kbuf[4096];
+    int r;
+
+    if (f->is_socket == 2) {
+        struct helix_tcp_sock *ts = (struct helix_tcp_sock *)f->fs_priv;
+        r = tcp_recv_data(ts, kbuf, sizeof(kbuf));
+        if (r < 0)
+            return (i64)r;
+        if (name && namelen >= 16) {
+            u8 ua[16];
+            memset(ua, 0, 16);
+            ua[0] = 2; ua[1] = 0;
+            ua[2] = (u8)(ts->rport_be >> 8);
+            ua[3] = (u8)ts->rport_be;
+            ua[4] = (u8)(ts->raddr_be);
+            ua[5] = (u8)(ts->raddr_be >> 8);
+            ua[6] = (u8)(ts->raddr_be >> 16);
+            ua[7] = (u8)(ts->raddr_be >> 24);
+            memcpy(name, ua, 16);
+        }
+    } else {
+        struct helix_sock *s = (struct helix_sock *)f->fs_priv;
+        u32 src_be = 0; u16 sport_be = 0;
+        r = net_sock_recvfrom(s, kbuf, sizeof(kbuf), &src_be, &sport_be);
+        if (r < 0)
+            return (i64)r;
+        if (name && namelen >= 16 && r > 0) {
+            u8 ua[16];
+            memset(ua, 0, 16);
+            ua[0] = 2; ua[1] = 0;
+            ua[2] = (u8)(sport_be >> 8); ua[3] = (u8)sport_be;
+            ua[4] = (u8)src_be; ua[5] = (u8)(src_be >> 8);
+            ua[6] = (u8)(src_be >> 16); ua[7] = (u8)(src_be >> 24);
+            memcpy(name, ua, 16);
+        }
+    }
+
+    /* Scatter kbuf[0..r-1] into user iovecs */
+    if (r > 0) {
+        int off = 0;
+        for (u64 i = 0; i < iovlen && off < r; i++) {
+            if (!user_ptr_ok((void *)(uintptr_t)iovp, i * 16 + 16))
+                break;
+            u8 *iov = (u8 *)(uintptr_t)iovp + i * 16;
+            void *base = *(void **)iov;
+            u64 len = *(u64 *)(iov + 8);
+            u32 n = (u32)(r - off);
+            if (n > len) n = (u32)len;
+            if (n > 0 && user_ptr_ok(base, n))
+                memcpy(base, kbuf + off, n);
+            off += n;
+        }
+    }
+    return (i64)r;
 }
 
 static i64 sys_setsockopt_stub(u64 fd, u64 level, u64 optname, u64 optval, u64 optlen)
@@ -1108,8 +1231,8 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case 42:  /* connect */   ret = sys_connect(f->a0, f->a1, f->a2); break;
     case 43:  /* accept */    ret = sys_accept(f->a0, f->a1, f->a2); break;
     case 50:  /* listen */    ret = sys_listen(f->a0, f->a1); break;
-    case 46:  /* sendmsg */   ret = sys_sendmsg_stub(f->a0, f->a1, f->a2); break;
-    case 47:  /* recvmsg */   ret = sys_recvmsg_stub(f->a0, f->a1, f->a2); break;
+    case 46:  /* sendmsg */   ret = sys_sendmsg(f->a0, f->a1, f->a2); break;
+    case 47:  /* recvmsg */   ret = sys_recvmsg(f->a0, f->a1, f->a2); break;
     case 54:  /* setsockopt */ret = sys_setsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
     case 55:  /* getsockopt */ret = sys_getsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
     case 57:  /* fork */      ret = sys_fork(); break;

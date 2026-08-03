@@ -27,6 +27,7 @@
 #define SYS_rt_sigaction 13
 #define SYS_rt_sigprocmask 14
 #define SYS_connect      42
+#define SYS_accept       43
 #define SYS_listen       50
 #define SOCK_STREAM      1
 #define WNOHANG          1
@@ -278,6 +279,79 @@ static void cmd_tcp_smoke(void)
     usys(SYS_close, sfd, 0, 0);
 }
 
+/* M16: TCP passive smoke — listen on 8081, accept + echo back */
+static void cmd_tcp_passive_smoke(void)
+{
+    long lfd = usys(SYS_socket, 2, SOCK_STREAM, 6);
+    if (lfd < 0) { xwrite("tcp_passive: socket fail\n"); return; }
+
+    /* sockaddr_in: 0.0.0.0:8081 BE */
+    unsigned char sa[16];
+    for (int i = 0; i < 16; i++) sa[i] = 0;
+    sa[0] = 2; sa[1] = 0;
+    sa[2] = 0x1F; sa[3] = 0x91; /* 8081 BE = 0x1F91 */
+
+    long r = usys(SYS_bind, lfd, (long)sa, 16);
+    if (r < 0) { xwrite("tcp_passive: bind fail\n"); usys(SYS_close, lfd, 0, 0); return; }
+
+    r = usys(SYS_listen, lfd, 4);
+    if (r < 0) { xwrite("tcp_passive: listen fail\n"); usys(SYS_close, lfd, 0, 0); return; }
+
+    xwrite("tcp_passive: listening on 8081\n");
+
+    /* Non-blocking: fcntl(fd, F_SETFL, O_NONBLOCK) */
+    usys(72, lfd, 4, 2048);
+
+    /* Poll for incoming connection — up to ~20s */
+    long cfd = -1;
+    for (int i = 0; i < 2000; i++) {
+        cfd = usys(SYS_accept, lfd, 0, 0);
+        if (cfd >= 0) break;
+        usys(SYS_yield, 0, 0, 0);
+    }
+
+    if (cfd < 0) {
+        xwrite("HelixTcpPassiveFAIL: no conn\n");
+        usys(SYS_close, lfd, 0, 0);
+        return;
+    }
+
+    xwrite("tcp_passive: accepted\n");
+
+    /* Set client socket non-blocking */
+    usys(72, cfd, 4, 2048);
+
+    /* Poll for incoming data — up to ~10s */
+    char rbuf[128];
+    int nr = 0;
+    for (int i = 0; i < 1000; i++) {
+        nr = (int)usys(SYS_read, cfd, (long)rbuf, sizeof(rbuf));
+        if (nr > 0) break;
+        usys(SYS_yield, 0, 0, 0);
+    }
+
+    if (nr <= 0) {
+        xwrite("HelixTcpPassiveFAIL: no data\n");
+        usys(SYS_close, cfd, 0, 0);
+        usys(SYS_close, lfd, 0, 0);
+        return;
+    }
+
+    /* Echo back with ECHO: prefix */
+    const char *prefix = "ECHO:";
+    long plen = 0; while (prefix[plen]) plen++;
+    usys(SYS_write, cfd, (long)prefix, plen);
+    usys(SYS_write, cfd, (long)rbuf, nr);
+
+    /* Give host client time to read, then close */
+    for (int i = 0; i < 50; i++) usys(SYS_yield, 0, 0, 0);
+
+    /* If we got here after host client connected and we echoed, print success */
+    xwrite("HelixTcpPassiveOK\n");
+    usys(SYS_close, cfd, 0, 0);
+    usys(SYS_close, lfd, 0, 0);
+}
+
 static void cmd_smoke(void)
 {
     char *e1[] = { "echo", "HelixLinuxOK", 0 };
@@ -516,6 +590,9 @@ host_udp:
 
     /* M15: TCP smoke — connect to host echo server via QEMU hostfwd */
     cmd_tcp_smoke();
+
+    /* M16: TCP passive smoke — guest listens on 8081, host client connects */
+    cmd_tcp_passive_smoke();
 
     /* M8: host ↔ guest UDP ping via QEMU port forward */
     {

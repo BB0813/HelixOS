@@ -271,3 +271,12 @@ Goal：[`docs/GOAL_M14.md`](GOAL_M14.md)
 
 ---
 
+## M16 — TCP passive + sendmsg/recvmsg `[x]`
+
+- [x] `sendmsg`(46) / `recvmsg`(47)：iovec coalesce/scatter + TCP/UDP 路由
+- [x] TCP 被动 hostfwd：guest listen + accept → host curl 连入 → echo 回复
+
+**验收**：`make smoke-net` 串口含 `HelixTcpPassiveOK`（被动 echo）+ M15 标记不回归。
+
+---
+

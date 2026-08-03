@@ -167,7 +167,7 @@ exec "${TIMEOUT_CMD[@]}" qemu-system-x86_64 \
   -drive if=none,id=helixesp,format=raw,file="$DISK_ARG" \
   -device ich9-ahci,id=ahci \
   -device ide-hd,drive=helixesp,bus=ahci.0,bootindex=1 \
-  -netdev user,id=net0,net=10.0.2.0/24,host=10.0.2.2,hostfwd=tcp::8080-:8080 \
+  -netdev user,id=net0,net=10.0.2.0/24,host=10.0.2.2,hostfwd=tcp::8080-:8080,hostfwd=tcp::8081-:8081 \
   -device e1000,netdev=net0 \
   -chardev stdio,id=com1,logfile="$LOG_ARG",signal=off \
   -serial chardev:com1 \

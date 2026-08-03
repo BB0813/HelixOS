@@ -39,8 +39,8 @@
 | 43 | accept | **done** | TCP passive accept（M14） |
 | 44 | sendto | **done** | TCP(PSH+ACK via `tcp_send_data`) / UDP 共路径，路由 by `is_socket` type（M15） |
 | 45 | recvfrom | **done** | TCP(`tcp_recv_data`) / UDP 共路径（非阻塞），路由 by `is_socket` type（M15） |
-| 46 | sendmsg | **ENOSYS** | TCP stub（映射留后） |
-| 47 | recvmsg | **ENOSYS** | TCP stub |
+| 46 | sendmsg | **done** | iovec coalesce → sendto；TCP/UDP 路由（M16） |
+| 47 | recvmsg | **done** | recvfrom → iovec scatter；TCP/UDP 路由（M16） |
 | 49 | bind | **done** | TCP / UDP 共路径（is_socket type） |
 | 50 | listen | **done** | TCP LISTEN + accept backlog（M14） |
 | 54 | setsockopt | **soft-stub** | 返回 0（TCP_NODELAY etc.） |
@@ -93,5 +93,6 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-01 | M13：信号最小集（SIGCHLD/SIGINT/kill + HelixSigOK） → **`HelixSigOK`** |
 | 2026-08-01 | M14：TCP 全栈（state machine + connect/accept/listen + is_socket=2 + kernel self-test） → **`HelixTcpOK`** |
 | 2026-08-01 | M15：sendto/recvfrom TCP 路由（is_socket==2 → tcp_send_data/tcp_recv_data）；helixbox TCP echo → **`HelixTcpUserOK`** |
-| 2026-08-01 | 文档对齐 M0–M15（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M16 TCP passive/sendmsg |
+| 2026-08-01 | M16：sendmsg(46)/recvmsg(47) 完整实现（iovec coalesce/scatter + TCP/UDP 路由） |
+| 2026-08-01 | 文档对齐 M0–M15（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M16 TCP passive + sendmsg |
 

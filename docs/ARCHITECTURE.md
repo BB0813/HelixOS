@@ -49,6 +49,7 @@ UEFI firmware (OVMF)
                  · cwd/chdir HelixCwdOK
                  · signals HelixSigOK（kill SIGTERM）
                  · TCP echo HelixTcpUserOK（hostfwd → host echo server，M15）
+                 · TCP passive HelixTcpPassiveOK（guest listen + host connect，M16）
            M11 msh -c "echo HelixMshOK | cat"
          全退出后 → 内核 idle / shell
 ```
@@ -171,7 +172,7 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 | 图形 | M9 **done** | GOP fb + headless fallback |
 | 进程 | M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
 | 信号 | **M13 done** | kill/sigaction/SIGCHLD/SIGINT |
-| TCP | **M14–M15 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；`HelixTcpUserOK` |
+| TCP | **M14–M16 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；sendmsg/recvmsg + passive hostfwd（M16） |
 
 ## ABI policy
 
