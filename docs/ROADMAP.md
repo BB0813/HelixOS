@@ -302,3 +302,20 @@ Goal: [`docs/GOAL_M17.md`](GOAL_M17.md)
 
 ---
 
+## M18 — fb user-space interface + PS/2 keyboard `[~]`
+
+Goal: [`docs/GOAL_M18.md`](GOAL_M18.md)
+
+- [x] `kernel/drv/ps2.c`：PS/2 键盘 IRQ1 handler + scancode ring buffer + set-1 ASCII translation
+- [x] `irq.c`：IRQ1 分发 → `ps2_handler()`；`irq_init` 调用 `ps2_init()` unmask IRQ1
+- [x] `kernel/drv/fb.c`：`fb_get_info()` + `fb_map_user()` — 用户态 mmap 帧缓冲
+- [x] `paging.h`：PTE_P/W/U 标志提升到头文件（供 fb.c 使用）
+- [x] `sys_mmap` 扩展：`fd == -4` 映射 GOP 帧缓冲物理页到用户 VA
+- [x] `sys_fb_info`（nr=546）：返回 width/height/pitch/bpp/size 到用户 struct
+- [x] `sys_readkey`（nr=547）：非阻塞 PS/2 键盘读取
+- [x] helixbox 自检：`HelixFBInfoOK` + `HelixFBMmapOK` + `HelixKbOK`
+
+**验证**：`make smoke` 串口含 `HelixFBInfoOK` + `HelixFBMmapOK` + `HelixKbOK`；
+`make smoke-fb` QEMU 窗口可见蓝色矩形（mmap 写入）；启动日志含 `[ps2] keyboard ready`。
+
+---

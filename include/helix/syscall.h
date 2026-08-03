@@ -62,6 +62,8 @@
 #define SYS_pipe            22
 #define SYS_readv           19
 #define SYS_getrandom      318
+#define SYS_fb_info        546
+#define SYS_readkey        547
 
 void     syscall_init(void);
 int      user_ptr_ok(const void *ptr, u64 len);

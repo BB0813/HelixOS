@@ -2,6 +2,14 @@
 
 #include "helix/types.h"
 
+/* PTE flags — shared with paging.c */
+#define PTE_P   (1ull << 0)
+#define PTE_W   (1ull << 1)
+#define PTE_U   (1ull << 2)
+#define PTE_PWT (1ull << 3)
+#define PTE_PCD (1ull << 4)
+#define PTE_PS  (1ull << 7)
+
 /* Identity-map [0, phys_ceiling) with 2MiB pages; load CR3. */
 int  paging_init_identity(u64 phys_ceiling);
 void paging_invlpg(u64 va);

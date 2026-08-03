@@ -13,6 +13,8 @@
 #include "helix/vmm.h"
 #include "helix/paging.h"
 #include "helix/net.h"
+#include "helix/fb.h"
+#include "helix/ps2.h"
 #include "helix/pipe.h"
 #include "helix/signal.h"
 #include "helix/tcp.h"
@@ -327,6 +329,24 @@ static i64 sys_mmap(u64 addr, u64 len, u64 prot, u64 flags, u64 fd, u64 off)
     (void)off;
     if (len == 0)
         return ERR(EINVAL);
+
+    /* M18: framebuffer mmap — fd = -4 (0xFFFFFFFFFFFFFFFC) maps GOP fb */
+    if (fd == 0xFFFFFFFFFFFFFFFCull) {
+        u64 va;
+        if (addr == 0) {
+            static u64 fb_bump = USER_BASE + 0x1000000ull;
+            va = fb_bump;
+            fb_bump += align_up_u64(len, PAGE_SIZE);
+            if (fb_bump >= USER_STACK_TOP - USER_STACK_SIZE)
+                return ERR(ENOMEM);
+        } else {
+            va = addr & ~0xFFFull;
+        }
+        if (fb_map_user(va) != 0)
+            return ERR(ENOMEM);
+        return (i64)va;
+    }
+
     /* File-backed mmap not implemented — anonymous only (MAP_ANONYMOUS or fd==-1). */
     int anon = (flags & MAP_ANONYMOUS) || fd == (u64)-1 || fd == 0xffffffffffffffffull;
     if (!anon)
@@ -364,6 +384,34 @@ static i64 sys_mmap(u64 addr, u64 len, u64 prot, u64 flags, u64 fd, u64 off)
     if (!vmm_alloc_user_pages(va, len / PAGE_SIZE, 1))
         return ERR(ENOMEM);
     return (i64)va;
+}
+
+/* M18: fb_info syscall — returns framebuffer geometry to user. */
+struct fb_info_user {
+    u32 width;
+    u32 height;
+    u32 pitch;
+    u32 bpp;
+    u64 size;
+};
+static i64 sys_fb_info(u64 info_ptr)
+{
+    if (!user_ptr_ok((void *)(uintptr_t)info_ptr, sizeof(struct fb_info_user)))
+        return ERR(EFAULT);
+    struct fb_info_user *ui = (struct fb_info_user *)(uintptr_t)info_ptr;
+    fb_get_info(&ui->width, &ui->height, &ui->pitch, &ui->bpp, &ui->size);
+    return 0;
+}
+
+/* M18: readkey syscall — non-blocking PS/2 keyboard read. */
+static i64 sys_readkey(u64 buf_ptr, u64 len)
+{
+    if (!len) return 0;
+    if (!user_ptr_ok((void *)(uintptr_t)buf_ptr, len))
+        return ERR(EFAULT);
+    int n = ps2_read((char *)(uintptr_t)buf_ptr, (int)len);
+    if (n == 0) return -11; /* EAGAIN */
+    return (i64)n;
 }
 
 static i64 sys_getuid(void) { return 0; }
@@ -1241,6 +1289,8 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case 59:  /* execve */    ret = sys_execve(f->a0, f->a1, f->a2); break;
     case SYS_wait4:           ret = sys_wait4(f->a0, f->a1, f->a2, f->a3); break;
     case SYS_pipe:            ret = sys_pipe(f->a0); break;
+    case SYS_fb_info:         ret = sys_fb_info(f->a0); break;
+    case SYS_readkey:         ret = sys_readkey(f->a0, f->a1); break;
     default:
         kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
         ret = ERR(ENOSYS);

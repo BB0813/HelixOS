@@ -8,13 +8,6 @@
  * User 4K maps installed later via paging_map_4k on the same CR3.
  */
 
-#define PTE_P   (1ull << 0)
-#define PTE_W   (1ull << 1)
-#define PTE_U   (1ull << 2)
-#define PTE_PWT (1ull << 3)
-#define PTE_PCD (1ull << 4)
-#define PTE_PS  (1ull << 7)
-
 static u64 g_mapped_ceiling;
 static u64 g_cr3;
 static u64 *g_pml4;

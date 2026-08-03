@@ -3,13 +3,17 @@
  * - Init from boot_info (physical address, identity-mapped)
  * - cls / pixel / rect / put_char / puts
  * - Embedded 8x16 VGA bitmap font (ASCII 32-126)
+ * - M18: fb_get_info() + fb_map_user() for user-space mmap
  */
 #include "helix/fb.h"
 #include "helix/kprintf.h"
 #include "helix/string.h"
+#include "helix/paging.h"
 
 static volatile u8 *g_fb;
 static u32 g_w, g_h, g_pitch, g_bpp;
+static u64 g_fb_phys;   /* physical address for user mmap */
+static u64 g_fb_size;   /* total bytes */
 
 static inline void w32(volatile void *a, u32 v)
 {
@@ -29,8 +33,12 @@ int fb_init(struct helix_boot_info *info)
     g_h     = info->fb_height;
     g_pitch = info->fb_pitch;
     g_bpp   = info->fb_bpp;
-    kprintf("[fb] %ux%u pitch=%u bpp=%u fb=0x%llx\n",
-            g_w, g_h, g_pitch, g_bpp, (unsigned long long)info->fb_addr);
+    g_fb_phys = info->fb_addr;
+    g_fb_size = (u64)g_pitch * g_h;
+    kprintf("[fb] %ux%u pitch=%u bpp=%u fb=0x%llx size=%llu\n",
+            g_w, g_h, g_pitch, g_bpp,
+            (unsigned long long)info->fb_addr,
+            (unsigned long long)g_fb_size);
     return 0;
 }
 
@@ -174,4 +182,30 @@ void fb_puts(int x, int y, const char *s, u32 fg, u32 bg)
         x += 8;
         s++;
     }
+}
+
+/* M18: user-space framebuffer interface */
+
+void fb_get_info(u32 *w, u32 *h, u32 *pitch, u32 *bpp, u64 *size)
+{
+    if (w)     *w     = g_w;
+    if (h)     *h     = g_h;
+    if (pitch) *pitch = g_pitch;
+    if (bpp)   *bpp   = g_bpp;
+    if (size)  *size  = g_fb_size;
+}
+
+int fb_map_user(u64 va)
+{
+    if (!g_fb_phys || !g_fb_size)
+        return -1;
+    u64 start = va & ~0xFFFull;
+    u64 pages = (g_fb_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    u64 flags = PTE_P | PTE_U | PTE_W;  /* RWX for simplicity */
+    for (u64 i = 0; i < pages; i++) {
+        if (paging_map_4k(start + i * PAGE_SIZE,
+                          g_fb_phys + i * PAGE_SIZE, flags) != 0)
+            return -1;
+    }
+    return 0;
 }

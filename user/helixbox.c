@@ -35,6 +35,16 @@
 #define SIGCHLD         17
 #define SIG_IGN  ((unsigned long)1)
 
+/* M18 */
+#define SYS_mmap          9
+#define SYS_fb_info     546
+#define SYS_readkey     547
+#define SYS_fcntl        72
+#define O_NONBLOCK    2048
+#define PROT_READ        1
+#define PROT_WRITE       2
+#define MAP_ANONYMOUS   32
+
 /* Linux open flags */
 #define O_RDONLY 0
 #define O_WRONLY 1
@@ -352,6 +362,65 @@ static void cmd_tcp_passive_smoke(void)
     usys(SYS_close, lfd, 0, 0);
 }
 
+/* M18: framebuffer + PS/2 keyboard smoke test */
+struct fb_info_user {
+    unsigned int width;
+    unsigned int height;
+    unsigned int pitch;
+    unsigned int bpp;
+    unsigned long long size;
+};
+
+static void cmd_m18_smoke(void)
+{
+    /* 1. fb_info syscall: verify framebuffer geometry */
+    {
+        struct fb_info_user info = {0};
+        long r = usys(SYS_fb_info, (long)&info, 0, 0);
+        if (r == 0 && info.width > 0 && info.height > 0 && info.pitch > 0) {
+            xwrite("HelixFBInfoOK\n");
+        } else {
+            xwrite("HelixFBInfoSKIP\n");
+        }
+    }
+
+    /* 2. mmap fd=-4: map framebuffer into userspace and write test pattern */
+    {
+        struct fb_info_user info = {0};
+        usys(SYS_fb_info, (long)&info, 0, 0);
+        if (info.size > 0) {
+            long fb = usys6(SYS_mmap, 0, (long)info.size,
+                            PROT_READ | PROT_WRITE, MAP_ANONYMOUS | 32,
+                            0xFFFFFFFFFFFFFFFCLL, 0);
+            if (fb > 0) {
+                /* Write blue rectangle to top-left corner */
+                unsigned int *pixels = (unsigned int *)fb;
+                unsigned int blue = 0x00FF0000;  /* BGRA: blue */
+                unsigned int w = info.pitch / 4;
+                for (unsigned int y = 0; y < 16 && y < info.height; y++)
+                    for (unsigned int x = 0; x < 64 && x < info.width; x++)
+                        pixels[y * w + x] = blue;
+                xwrite("HelixFBMmapOK\n");
+            } else {
+                xwrite("HelixFBMmapFAIL\n");
+            }
+        } else {
+            xwrite("HelixFBMmapSKIP\n");
+        }
+    }
+
+    /* 3. readkey syscall: non-blocking keyboard read */
+    {
+        char kbuf[4];
+        long r = usys(SYS_readkey, (long)kbuf, 4, 0);
+        /* Either -EAGAIN (-11) = no key pressed (expected), or got a key */
+        if (r == -11 || r > 0)
+            xwrite("HelixKbOK\n");
+        else
+            xwrite("HelixKbFAIL\n");
+    }
+}
+
 static void cmd_smoke(void)
 {
     char *e1[] = { "echo", "HelixLinuxOK", 0 };
@@ -363,6 +432,9 @@ static void cmd_smoke(void)
     cmd_uname();
     char *e4[] = { "sh", "-c", "echo sh_ok", 0 };
     cmd_sh(3, e4);
+
+    /* M18: framebuffer + keyboard */
+    cmd_m18_smoke();
 
     /* M12: cwd + chdir + relative open self-test */
     {
