@@ -54,8 +54,6 @@ scripts/local.mk
 
 # Local editor/agent tooling
 .marking/
-*.jpg
-*.png
 !esp_assets/**
 
 # Keep musl-dyn binaries (fetched from NAS); ignore empty stubs
