@@ -26,6 +26,9 @@
 #define SYS_kill        62
 #define SYS_rt_sigaction 13
 #define SYS_rt_sigprocmask 14
+#define SYS_connect      42
+#define SYS_listen       50
+#define SOCK_STREAM      1
 #define WNOHANG          1
 #define SIGTERM         15
 #define SIGCHLD         17
@@ -208,6 +211,71 @@ static void cmd_mkdir(int argc, char **argv)
     long r = usys(SYS_mkdir, (long)argv[1], 0755, 0);
     if (r < 0)
         xwrite("mkdir: failed\n");
+}
+
+static void cmd_tcp_smoke(void)
+{
+    /* AF_INET=2, SOCK_STREAM=1, TCP=6 */
+    long sfd = usys(SYS_socket, 2, SOCK_STREAM, 6);
+    if (sfd < 0) { xwrite("tcp_smoke: socket fail\n"); return; }
+
+    /* Set non-blocking: fcntl(fd, F_SETFL, O_NONBLOCK) */
+    usys(72, sfd, 4 /*F_SETFL*/, 2048 /*O_NONBLOCK*/);
+
+    /* sockaddr_in: 10.0.2.2:8080 BE */
+    unsigned char sa[16];
+    for (int i = 0; i < 16; i++) sa[i] = 0;
+    sa[0] = 2; sa[1] = 0;
+    sa[2] = 0x1F; sa[3] = 0x90; /* 8080 BE = 0x1F90 */
+    sa[4] = 10; sa[5] = 2; sa[6] = 0; sa[7] = 2;
+
+    /* Connect with retry — ARP may need a few yield cycles */
+    long r = -1;
+    for (int i = 0; i < 100 && r < 0; i++) {
+        r = usys(SYS_connect, sfd, (long)sa, 16);
+        if (r < 0)
+            usys(SYS_yield, 0, 0, 0);
+    }
+    if (r < 0) {
+        xwrite("tcp_smoke: connect fail\n");
+        usys(SYS_close, sfd, 0, 0);
+        return;
+    }
+
+    /* Poll for ESTABLISHED (SYN/ACK exchange) — up to ~10s */
+    for (int i = 0; i < 1000; i++) {
+        const char *payload = "HELIX_TCP_PING";
+        long plen = 0; while (payload[plen]) plen++;
+        r = usys6(SYS_sendto, sfd, (long)payload, plen, 0, (long)sa, 16);
+        if (r >= 0) break; /* success — data sent */
+        usys(SYS_yield, 0, 0, 0);
+    }
+
+    if (r < 0) {
+        xwrite("tcp_smoke: connect timeout\n");
+        usys(SYS_close, sfd, 0, 0);
+        return;
+    }
+
+    /* Recv ECHO reply — up to ~10s */
+    char rbuf[128];
+    int ok = 0;
+    for (int i = 0; i < 1000; i++) {
+        long nr = usys6(SYS_recvfrom, sfd, (long)rbuf, 128, 0, 0, 0);
+        if (nr > 0) {
+            const char *expect = "ECHO:HELIX_TCP_PING";
+            ok = 1;
+            for (long j = 0; j < nr && j < 19; j++)
+                if (rbuf[j] != expect[j]) { ok = 0; break; }
+            break;
+        }
+        usys(SYS_yield, 0, 0, 0);
+    }
+    if (ok)
+        xwrite("HelixTcpUserOK\n");
+    else
+        xwrite("HelixTcpUserFAIL\n");
+    usys(SYS_close, sfd, 0, 0);
 }
 
 static void cmd_smoke(void)
@@ -445,6 +513,9 @@ done_sock:
     }
 
 host_udp:
+
+    /* M15: TCP smoke — connect to host echo server via QEMU hostfwd */
+    cmd_tcp_smoke();
 
     /* M8: host ↔ guest UDP ping via QEMU port forward */
     {

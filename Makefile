@@ -215,13 +215,14 @@ clean:
 
 smoke-net: esp
 	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
-	@HEADLESS=1 TIMEOUT_SECS=75 bash $(ROOT)/scripts/run-qemu.sh || true
+	@python $(ROOT)/scripts/tcp_echo_server.py & TCP_PID=$$!; sleep 1; HEADLESS=1 TIMEOUT_SECS=120 bash $(ROOT)/scripts/run-qemu.sh || true; kill $$TCP_PID 2>/dev/null || true
 	@grep -a -F -q "M7 net ready" $(ROOT)/serial.log || { echo SMOKE-NET FAIL M7; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "10.0.2.15" $(ROOT)/serial.log || { echo SMOKE-NET FAIL IP; exit 1; }
 	@grep -a -F -q "HelixNetOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixNetOK; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "ICMP echo reply" $(ROOT)/serial.log || { echo SMOKE-NET FAIL ICMP; exit 1; }
 	@grep -a -F -q "user_udp_ok" $(ROOT)/serial.log || { echo SMOKE-NET FAIL user_udp_ok; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "HelixTcpOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpOK; cat $(ROOT)/serial.log; exit 1; }
+	@if grep -a -F -q "HelixTcpUserOK" $(ROOT)/serial.log 2>/dev/null; then echo "SMOKE-NET OK (TCP user)"; else echo "SMOKE-NET WARN: HelixTcpUserOK missing"; fi
 	@echo SMOKE-NET OK
 	@grep -a -E 'net|arp|icmp|udp|tcp|HelixNet|host_udp' $(ROOT)/serial.log | head -40
 

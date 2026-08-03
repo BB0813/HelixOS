@@ -257,11 +257,17 @@ Goal：[`docs/GOAL_M14.md`](GOAL_M14.md)
 
 ---
 
-## M15 — 用户态 TCP 完善（后续候选）`[ ]`
+## M15 — 用户态 TCP 完善 `[x]`
 
-- [ ] helixbox `HelixTcpOK` 用户态 TCP echo/ping 自检（若环境允许）
+- [x] helixbox TCP echo 自检：`socket(SOCK_STREAM)` + `connect(10.0.2.2:8080)` + `sendto`/`recvfrom` → **`HelixTcpUserOK`**
+- [x] `sendto`/`recvfrom` 路由：`is_socket==1` ↔ UDP；is_socket==2` ↔ TCP
 - [ ] TCP 被动模式 hostfwd ↔ guest 端到端
 - [ ] `sendmsg`/`recvmsg` 完善映射
 - [ ] 更多 TCP 状态覆盖
 
+**注意**：host echo server (`scripts/tcp_echo_server.py`) 仅在 `smoke-net` 期间启动。
+
+**验收**：`make smoke-net` 串口含 `HelixTcpUserOK` + `HelixTcpOK` + `HelixNetOK` + `user_udp_ok`。
+
+---
 

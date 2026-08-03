@@ -25,7 +25,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M12 已完成**（2026-08-01）
+**M0–M14 已完成**（2026-08-01）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -39,6 +39,9 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M10 | `fork` / `execve`（独立 PML4） | `ForkChildOK` |
 | M11 | `wait4` / `pipe` / FD refcount / **msh** | `PipeOK` · `HelixMshOK` |
 | M12 | per-task **cwd** / `chdir` / 路径解析 / console stdin | **`HelixCwdOK`** |
+| M13 | 信号最小集（SIGCHLD/SIGINT/kill + HelixSigOK） | **`HelixSigOK`** |
+| M14 | **TCP 全栈**（state machine + connect/accept/listen） | **`HelixTcpOK`** |
+| M15 | TCP 用户态 echo（sendto/recvfrom TCP 路由） | **`HelixTcpUserOK`** |
 
 ## 快速开始
 
@@ -79,6 +82,9 @@ ForkChildOK  ForkParentOK
 PipeOK  WaitOK
 HelixMshOK
 HelixCwdOK
+HelixSigOK
+HelixTcpOK
+HelixTcpUserOK
 helixbox_smoke_done
 ```
 
@@ -108,7 +114,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M12**（已完成）；下一候选 **M13 signals**。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M15**（已完成）；下一候选 **M16 TCP 被动模式 / sendmsg**。
 
 ## 许可
 

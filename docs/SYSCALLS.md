@@ -37,8 +37,8 @@
 | 41 | socket | **done** | AF_INET；SOCK_DGRAM→UDP，SOCK_STREAM→TCP（M14） |
 | 42 | connect | **done** | TCP active open（SYN_SENT→EST）（M14） |
 | 43 | accept | **done** | TCP passive accept（M14） |
-| 44 | sendto | **done** | TCP(PSH+ACK) / UDP 共路径 |
-| 45 | recvfrom | **done** | TCP / UDP 共路径（非阻塞） |
+| 44 | sendto | **done** | TCP(PSH+ACK via `tcp_send_data`) / UDP 共路径，路由 by `is_socket` type（M15） |
+| 45 | recvfrom | **done** | TCP(`tcp_recv_data`) / UDP 共路径（非阻塞），路由 by `is_socket` type（M15） |
 | 46 | sendmsg | **ENOSYS** | TCP stub（映射留后） |
 | 47 | recvmsg | **ENOSYS** | TCP stub |
 | 49 | bind | **done** | TCP / UDP 共路径（is_socket type） |
@@ -92,5 +92,6 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-01 | M12：per-task cwd + `chdir`(80) + 路径解析；console stdin poll；msh cd/pwd → **`HelixCwdOK`** |
 | 2026-08-01 | M13：信号最小集（SIGCHLD/SIGINT/kill + HelixSigOK） → **`HelixSigOK`** |
 | 2026-08-01 | M14：TCP 全栈（state machine + connect/accept/listen + is_socket=2 + kernel self-test） → **`HelixTcpOK`** |
-| 2026-08-01 | 文档对齐 M0–M14（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M15 TCP 用户态完善 |
+| 2026-08-01 | M15：sendto/recvfrom TCP 路由（is_socket==2 → tcp_send_data/tcp_recv_data）；helixbox TCP echo → **`HelixTcpUserOK`** |
+| 2026-08-01 | 文档对齐 M0–M15（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M16 TCP passive/sendmsg |
 

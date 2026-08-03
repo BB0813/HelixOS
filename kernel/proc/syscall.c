@@ -705,11 +705,17 @@ static i64 sys_sendto(u64 fd, u64 buf, u64 len, u64 flags, u64 sockaddr, u64 add
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
-    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
     const u8 *sa = (const u8 *)(uintptr_t)sockaddr;
     u16 port_be = (u16)sa[2] | ((u16)sa[3] << 8);
     u32 addr_be = (u32)sa[4] | ((u32)sa[5] << 8) |
                   ((u32)sa[6] << 16) | ((u32)sa[7] << 24);
+    if (f->is_socket == 2) {
+        /* TCP: send data via tcp_send_data */
+        struct helix_tcp_sock *ts = (struct helix_tcp_sock *)f->fs_priv;
+        (void)port_be; (void)addr_be;
+        return tcp_send_data(ts, (const void *)(uintptr_t)buf, (u32)len);
+    }
+    struct helix_sock *s = (struct helix_sock *)f->fs_priv;
     return net_sock_sendto(s, (const void *)(uintptr_t)buf,
                            (u32)len, addr_be, port_be);
 }
@@ -727,6 +733,27 @@ static i64 sys_recvfrom(u64 fd, u64 buf, u64 len, u64 flags, u64 sockaddr, u64 a
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
+    if (f->is_socket == 2) {
+        /* TCP: recv data via tcp_recv_data */
+        struct helix_tcp_sock *ts = (struct helix_tcp_sock *)f->fs_priv;
+        int r = tcp_recv_data(ts, (void *)(uintptr_t)buf, (u32)len);
+        if (r < 0)
+            return (i64)r;
+        if (sockaddr != 0 && r > 0) {
+            u8 *sa = (u8 *)(uintptr_t)sockaddr;
+            memset(sa, 0, 16);
+            sa[0] = 2; sa[1] = 0; /* AF_INET */
+            /* remote port (BE) */
+            sa[2] = (u8)(ts->rport_be >> 8);
+            sa[3] = (u8)ts->rport_be;
+            /* remote addr (BE) stored directly */
+            sa[4] = (u8)(ts->raddr_be);
+            sa[5] = (u8)(ts->raddr_be >> 8);
+            sa[6] = (u8)(ts->raddr_be >> 16);
+            sa[7] = (u8)(ts->raddr_be >> 24);
+        }
+        return (i64)r;
+    }
     struct helix_sock *s = (struct helix_sock *)f->fs_priv;
     u32 src_be = 0; u16 sport_be = 0;
     int r = net_sock_recvfrom(s, (void *)(uintptr_t)buf,

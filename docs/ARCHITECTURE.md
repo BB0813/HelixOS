@@ -48,6 +48,7 @@ UEFI firmware (OVMF)
                  · pipe/wait PipeOK WaitOK
                  · cwd/chdir HelixCwdOK
                  · signals HelixSigOK（kill SIGTERM）
+                 · TCP echo HelixTcpUserOK（hostfwd → host echo server，M15）
            M11 msh -c "echo HelixMshOK | cat"
          全退出后 → 内核 idle / shell
 ```
@@ -127,11 +128,11 @@ exec /bin/hello.musl
 |----|------|
 | 状态机 | CLOSED → SYN_SENT → ESTABLISHED → FIN_WAIT(1/2) → TIME_WAIT → CLOSED；LISTEN/SYN_RECEIVED/CLOSE_WAIT/LAST_ACK |
 | 数据结构 | `helix_tcp_sock`：seq/ack/window + RXQ(8) + TXQ(4)；`is_socket=2` |
-| 收发 | `tcp_input`（IPv4 路径）→ demux by state；`sendto`/`recvfrom` 路由 by is_socket type |
-| 验收 | ICMP gate 通后 `tcp_init` → **`HelixTcpOK`** 内核自检 |
+| 收发 | `tcp_input`（IPv4 路径）→ demux by state；`sendto`/`recvfrom` 路由 by `is_socket` type（M15：TCP → `tcp_send_data`/`tcp_recv_data`） |
+| 验收 | ICMP gate 通后 `tcp_init` → **`HelixTcpOK`** 内核自检；helixbox → **`HelixTcpUserOK`**（hostfwd TCP echo，M15） |
 
 **约束**：协作调度下 TCP 阻塞操作用 EAGAIN + 用户态 yield 轮询。
-QEMU user net 无 host 端 TCP 服务，需 passive echo test 或 hostfwd。
+QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smoke-net 启动。
 
 ### M9 graphics
 
@@ -170,7 +171,7 @@ QEMU user net 无 host 端 TCP 服务，需 passive echo test 或 hostfwd。
 | 图形 | M9 **done** | GOP fb + headless fallback |
 | 进程 | M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
 | 信号 | **M13 done** | kill/sigaction/SIGCHLD/SIGINT |
-| TCP | **M14 done** | state machine + socket/connect/listen/accept；内核自检 |
+| TCP | **M14–M15 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；`HelixTcpUserOK` |
 
 ## ABI policy
 
