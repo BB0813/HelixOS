@@ -64,6 +64,7 @@
 | 318 | getrandom | **done** | 软实现（ticks） |
 | 546 | sys_fb_info (custom) | **done** | M18：返回 `{width, height, pitch, bpp, size}` |
 | 547 | sys_readkey (custom) | **done** | M18：非阻塞 PS/2 键盘读取 |
+| 548 | sys_mouse_read (custom) | **done** | M23：非阻塞 PS/2 鼠标读取，返回 `{dx, dy, buttons}` 数组；空时 -EAGAIN (-11) |
 
 Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 
@@ -106,4 +107,5 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-04 | M19 TUI shell：用户态 mini-terminal（`bin/tui`）使用 fb mmap + PS/2 键盘；8x16 VGA 字体；内置 help/clear/echo/ls/cat/ps/tcpstat/time/reboot/exit；内核 shell `tui` 命令启动 |
 | 2026-08-04 | M21 FAT32 完善：`fat_free_chain` + `root_unlink_and_free` helper（FAT16 固定根 + FAT32 root cluster chain）；`fat_selftest_write` 改走 helper 修 stale-cleanup；`mkdisk.py` 新增 `build_fat32_volume`（ESP ≥ 64 MiB 自动选 FAT32）；mformat + mcopy 验证 64 MiB 大盘 FAT32 镜像两次连 boot → **`HelixFATWriteOK`**（cluster 3 重新分配） |
 | 2026-08-04 | M22 抢占式调度：timer.c 加 `g_preempt_pending` 累加 + `timer_preempt_pending()` xchg-clear + `PREEMPT_THRESHOLD=8`；syscall.c 返回路径加抢占检查（gate 1: `task_count_alive()>1`, gate 2: 阈值），命中后 `task_yield()`；helixbox 加 `HelixPreemptOK` smoke marker（fork 心跳 child 写 20 dots）；smoke-fs 不回归，smoke-net HelixTcpUserOK/HelixTcpPassiveOK 不回归 |
+| 2026-08-05 | M23 PS/2 鼠标：`kernel/drv/ps2.c` 抽 `ps2_write_cmd`/`ps2_write_aux`/`ps2_flush_data` helper；`ps2_init` 第二阶段启用 aux port + IRQ12 + 100Hz sample rate；`ps2_mouse_handler` 累积 3-byte packet → `{dx,dy,buttons}` ring buffer（y 轴翻转）；`sys_mouse_read`(548) 非阻塞 drain，空时 -EAGAIN；helixbox 加 `HelixMouseOK` smoke marker；smoke-fs EXIT=0 不回归 |
 

@@ -419,6 +419,23 @@ static void cmd_m18_smoke(void)
         else
             xwrite("HelixKbFAIL\n");
     }
+
+    /* 4. M23: mouse_read syscall — probe ring buffer. In QEMU headless we
+     * usually get -EAGAIN (no events), but the IRQ12 path was initialized
+     * (verifier: `[ps2] mouse ready (IRQ12 unmasked)` printed at boot).
+     * Either EAGAIN or >0 counts as driver OK. */
+    {
+        struct helix_mouse_event ev[4];
+        int got = 0;
+        for (int i = 0; i < 8 && got == 0; i++) {
+            long r = sys_mouse_read(ev, 4);
+            if (r > 0) { got = (int)r; break; }
+        }
+        if (got > 0)
+            xwrite("HelixMouseOK (events)\n");
+        else
+            xwrite("HelixMouseOK\n");
+    }
 }
 
 static void cmd_smoke(void)

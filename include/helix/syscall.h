@@ -64,6 +64,7 @@
 #define SYS_getrandom      318
 #define SYS_fb_info        546
 #define SYS_readkey        547
+#define SYS_mouse_read     548
 
 void     syscall_init(void);
 int      user_ptr_ok(const void *ptr, u64 len);

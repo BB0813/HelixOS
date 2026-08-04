@@ -172,6 +172,25 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **启动**：内核 shell `tui` 命令经 `task_exec_path("tui", "/bin/tui", av)`
 - **验收**：内核 shell 启动 tui 后 `task_exec_path(tui) -> 0x...`；fb 缺失环境下 `[tui] no framebuffer` 优雅退出
 
+### M23 PS/2 mouse
+
+- **复用 PS/2 控制器第二通道**（`kernel/drv/ps2.c`）：同一 8042 芯片，port 0x64 命令 + 0x60 数据，命令字节 0xD4 前缀路由到 aux（鼠标）
+- **aux 初始化序列**：`0xA8` (enable aux) → `0x60 0x47` (command byte enable IRQ1+IRQ12+sys) → `0xD4 0xF4` (data reporting, ACK 0xFA) → `0xD4 0xF3 0x64` (sample rate 100/sec)
+- **3-byte packet 解析**：`[buttons|overflow, dx, dy]`；IRQ12 handler 累积到 `g_ms_packet[3]`，满 3 bytes 解析 → `{dx, dy, buttons}` → ring buffer (64 entries)
+- **y 轴翻转**：PS/2 y+ = 屏上 → 用户态 dy>0 = 屏下（GUI 约定）；dx/dy signed 8-bit 扩展为 i16
+- **overflow flag (bit 6/7)** 直接丢包，避免 wrap 误判；ring buffer 满时丢新事件（不阻塞 IRQ12）
+- **sys_mouse_read**(548)：从 ring buffer 一次性 drain 到用户 `struct helix_mouse_event[]`；空时返回 `-EAGAIN` (-11)
+- **验收**：串口含 `[ps2] mouse ready (IRQ12 unmasked)`；helixbox 探针走通 `HelixMouseOK`（有鼠标移动时追加 "(events)"）
+- **QEMU headless**：无鼠标移动时 ring buffer 始终空，驱动 ready 视为通过；启用 `-display gtk/sdl` 后 IRQ12 触发
+
+### M22 抢占式调度（preemptive）
+
+- **协作之上叠加 IRQ0 tick 抢占点**：`g_preempt_pending` 每 tick 累加；syscall 返回路径检查
+- **双 gate**：`task_count_alive() > 1`（单任务零开销）+ `timer_preempt_pending() >= PREEMPT_THRESHOLD(8)`（≈80ms 节流到 ~12 次/秒）
+- **不调 `net_poll()`**：`sys_yield()` 内部已调；抢占路径只负责 `task_yield()` 让后台 READY task 推进
+- **单任务场景**：`task_count_alive` short-circuit 后整个抢占逻辑零成本
+- **验收**：helixbox `HelixPreemptOK`（fork 心跳子进程写 20 dots，主 task yield 30 次，期间 2~3 次抢占让 child 推进）
+
 ### M21 FAT32 完善
 
 - **`fat_free_chain(c)`**：从 cluster `c` 沿 FAT chain 释放（entries → 0），EOF 停止

@@ -20,6 +20,9 @@ void irq_handle(u8 irq)
     case 1:
         ps2_handler();
         break;
+    case 12:
+        ps2_mouse_handler();
+        break;
     default:
         /* No handler: still EOI so the PIC does not stick. */
         break;
@@ -35,7 +38,7 @@ void irq_init(void)
     pic_init();
     timer_init();
     ps2_init();
-    kprintf("[irq] PIC+PIT ready (IRQ0 timer, IRQ1 keyboard)\n");
+    kprintf("[irq] PIC+PIT ready (IRQ0 timer, IRQ1 keyboard, IRQ12 mouse)\n");
 }
 
 void irq_enable(void)

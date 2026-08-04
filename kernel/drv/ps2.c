@@ -3,6 +3,11 @@
  * - IRQ1 handler reads scancode from port 0x60
  * - Ring buffer stores translated ASCII characters
  * - Scancode set 1 → ASCII with shift support
+ *
+ * M23: extended to PS/2 mouse (aux port, IRQ12).
+ * - ps2_write_cmd / ps2_write_aux / ps2_read_data helpers
+ * - ps2_mouse_handler accumulates 3-byte packet → ring buffer
+ * - ps2_init() phase 2 enables aux port + IRQ12
  */
 #include "helix/ps2.h"
 #include "helix/cpuio.h"
@@ -11,11 +16,49 @@
 
 #define PS2_DATA_PORT   0x60
 #define PS2_STATUS_PORT 0x64
+#define PS2_CMD_PORT    0x64
 #define KB_BUF_SIZE     256
+#define MS_BUF_SIZE     64
 
 static u8  g_kb_buf[KB_BUF_SIZE];
 static u32 g_kb_head, g_kb_tail;
 static int g_shift;  /* 1 = shift held */
+
+/* M23: mouse state */
+static struct helix_mouse_event g_ms_buf[MS_BUF_SIZE];
+static u32 g_ms_head, g_ms_tail;
+static u8  g_ms_packet[3];
+static u8  g_ms_byte_idx;
+
+/* Wait for status register to clear input buffer (bit 1 = input full). */
+static void ps2_wait_input(void)
+{
+    int spins = 0;
+    while ((inb(PS2_STATUS_PORT) & 0x02) && spins < 100000)
+        spins++;
+}
+
+/* Send a command byte to PS/2 controller. */
+static void ps2_write_cmd(u8 c)
+{
+    ps2_wait_input();
+    outb(PS2_CMD_PORT, c);
+}
+
+/* Send a data byte to the aux (mouse) device via 0xD4 prefix. */
+static void ps2_write_aux(u8 c)
+{
+    ps2_write_cmd(0xD4);
+    ps2_wait_input();
+    outb(PS2_DATA_PORT, c);
+}
+
+/* Flush any pending data byte (response ACK / error). */
+static void ps2_flush_data(void)
+{
+    if (inb(PS2_STATUS_PORT) & 0x01)
+        inb(PS2_DATA_PORT);
+}
 
 /* Scancode set 1 → ASCII: indices 0–127, 0 = unmapped. */
 static const u8 g_sc1[128] = {
@@ -76,6 +119,31 @@ void ps2_init(void)
         inb(PS2_DATA_PORT);
     pic_unmask(1);  /* IRQ1 — keyboard */
     kprintf("[ps2] keyboard ready (IRQ1 unmasked)\n");
+
+    /* M23: mouse phase 2 — enable aux port + IRQ12 + data reporting. */
+    g_ms_head = g_ms_tail = 0;
+    g_ms_byte_idx = 0;
+
+    /* Enable auxiliary device (0xA8). */
+    ps2_write_cmd(0xA8);
+    ps2_flush_data();
+
+    /* Set command byte: 0x60 then arg 0x47 = enable IRQ1 + IRQ12 + system flag. */
+    ps2_write_cmd(0x60);
+    ps2_write_cmd(0x47);
+
+    /* 0xF4 = Enable Data Reporting (mouse). */
+    ps2_write_aux(0xF4);
+    ps2_flush_data(); /* ACK 0xFA */
+
+    /* Set sample rate to 100/sec (0xF3 0x64). Optional but conventional. */
+    ps2_write_aux(0xF3);
+    ps2_flush_data();
+    ps2_write_aux(100);
+    ps2_flush_data();
+
+    pic_unmask(12);  /* IRQ12 — mouse */
+    kprintf("[ps2] mouse ready (IRQ12 unmasked)\n");
 }
 
 int ps2_read(char *buf, int len)
@@ -84,6 +152,55 @@ int ps2_read(char *buf, int len)
     while (n < len && g_kb_tail != g_kb_head) {
         buf[n++] = (char)g_kb_buf[g_kb_tail];
         g_kb_tail = (g_kb_tail + 1) % KB_BUF_SIZE;
+    }
+    return n;
+}
+
+/* M23: PS/2 mouse IRQ12 handler.
+ * Standard PS/2 mouse packet: 3 bytes [buttons|overflow, dx, dy].
+ * bit 0=左键, bit 1=右键, bit 2=中键; bits 6/7=Y/X overflow (drop packet).
+ * dx,dy are signed 8-bit; PS/2 y positive = "up the screen" — flip so
+ * dy>0 = "down" matches GUI convention. */
+void ps2_mouse_handler(void)
+{
+    u8 b = inb(PS2_DATA_PORT);
+
+    /* Skip 0xAA / 0xFA / 0xFE etc. responses when state machine is idle. */
+    if (g_ms_byte_idx == 0 && (b == 0xAA || b == 0xFA ||
+                               b == 0xFE || b == 0xFF)) {
+        return;
+    }
+
+    g_ms_packet[g_ms_byte_idx++] = b;
+    if (g_ms_byte_idx < 3)
+        return;
+    g_ms_byte_idx = 0;
+
+    u8 status = g_ms_packet[0];
+    /* Drop packets with overflow flags set. */
+    if (status & 0xC0) return;
+
+    u8 buttons = status & 0x07;
+    i16 dx = (i16)(i8)g_ms_packet[1];
+    i16 dy = -(i16)(i8)g_ms_packet[2]; /* flip y axis */
+
+    u32 next = (g_ms_head + 1) % MS_BUF_SIZE;
+    if (next == g_ms_tail)
+        return; /* ring buffer full, drop oldest unread first */
+
+    g_ms_buf[g_ms_head].dx = dx;
+    g_ms_buf[g_ms_head].dy = dy;
+    g_ms_buf[g_ms_head].buttons = buttons;
+    g_ms_buf[g_ms_head]._pad = 0;
+    g_ms_head = next;
+}
+
+int ps2_mouse_read(struct helix_mouse_event *out, int max)
+{
+    int n = 0;
+    while (n < max && g_ms_tail != g_ms_head) {
+        out[n++] = g_ms_buf[g_ms_tail];
+        g_ms_tail = (g_ms_tail + 1) % MS_BUF_SIZE;
     }
     return n;
 }

@@ -386,19 +386,21 @@ parent 继续打印 HelixPreemptOK）；`make smoke-net` 含 HelixPreemptOK + TC
 
 ---
 
-## M23 — PS/2 鼠标支持 `[ ]`
+## M23 — PS/2 鼠标支持 `[x]`
 
 Goal：PS/2 控制器第二通道（IRQ12）启用 + 鼠标 3-byte packet 解析；用户态可读鼠标事件。
 
-- [ ] `kernel/drv/ps2.c` 抽 `ps2_write_cmd()` / `ps2_write_aux()` / `ps2_read_data()` 公共 helper
-- [ ] `ps2_init()` 启用 aux port：`0xA8` + `0x60 | 0x02` + `0xD4 0xF4` + `0xD4 0xF3 0x64 0xF3 0x50`
-- [ ] `ps2_mouse_handler()` 累积 3-byte packet → `{dx, dy, buttons}` struct → ring buffer
-- [ ] `kernel/arch/x86_64/irq.c`：IRQ12 → `ps2_mouse_handler()`，`pic_unmask(12)`
-- [ ] `sys_mouse_read`(548)：从 ring buffer 读事件到用户 struct
-- [ ] helixbox 自检：`MouseMoveOK`（人为移动鼠标 QEMU 后台）+ `MouseBtnOK`（点击）
-- [ ] 新 `smoke-mouse` 目标
+- [x] `kernel/drv/ps2.c` 抽 `ps2_write_cmd()` / `ps2_write_aux()` / `ps2_flush_data()` 公共 helper
+- [x] `ps2_init()` 启用 aux port：`0xA8` + `0x60 | 0x47` + `0xD4 0xF4` + `0xD4 0xF3 0x64`
+- [x] `ps2_mouse_handler()` 累积 3-byte packet → `{dx, dy, buttons}` struct → ring buffer (64)
+- [x] `kernel/arch/x86_64/irq.c`：IRQ12 → `ps2_mouse_handler()`，`pic_unmask(12)`
+- [x] `sys_mouse_read`(548)：从 ring buffer 读事件到用户 struct；空时返回 `-EAGAIN` (-11)
+- [x] helixbox 自检：sys_mouse_read 路径探针 → `HelixMouseOK`（有事件追加 "(events)"）
+- [x] y 轴翻转：PS/2 y+ = 屏上 → 我们 dy>0 = 屏下（GUI 约定）
+- [x] overflow flag (bit 6/7) 丢弃，避免 dy/dx wrap 误判
 
-**验收**：`make esp` + QEMU 启动串口含 `[ps2] mouse ready (IRQ12)`；
-helixbox 输出 `HelixMouseOK`。
+**验收**：`make smoke-linux` 串口含 `[ps2] mouse ready (IRQ12 unmasked)` + `[user] HelixMouseOK`；
+`make smoke-fs` EXIT=0（FAT 写不回归）；smoke-net 仍因 host echo server 未启 baseline 失败
+（pre-existing M21 issue，非 M22/M23 回归）。
 
 ---

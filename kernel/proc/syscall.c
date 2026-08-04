@@ -422,6 +422,20 @@ static i64 sys_readkey(u64 buf_ptr, u64 len)
     return (i64)n;
 }
 
+/* M23: read mouse events. buf must hold `count` helix_mouse_event structs.
+ * Returns events read, or -EAGAIN if ring buffer empty. */
+static i64 sys_mouse_read(u64 buf_ptr, u64 count)
+{
+    if (!count) return 0;
+    if (!user_ptr_ok((void *)(uintptr_t)buf_ptr,
+                     count * sizeof(struct helix_mouse_event)))
+        return ERR(EFAULT);
+    int n = ps2_mouse_read((struct helix_mouse_event *)(uintptr_t)buf_ptr,
+                           (int)count);
+    if (n == 0) return -11; /* EAGAIN */
+    return (i64)n;
+}
+
 static i64 sys_getuid(void) { return 0; }
 static i64 sys_getgid(void) { return 0; }
 static i64 sys_geteuid(void) { return 0; }
@@ -1299,6 +1313,7 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case SYS_pipe:            ret = sys_pipe(f->a0); break;
     case SYS_fb_info:         ret = sys_fb_info(f->a0); break;
     case SYS_readkey:         ret = sys_readkey(f->a0, f->a1); break;
+    case SYS_mouse_read:      ret = sys_mouse_read(f->a0, f->a1); break;
     default:
         kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
         ret = ERR(ENOSYS);

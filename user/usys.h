@@ -10,6 +10,14 @@
 #define SYS_uname   63
 #define SYS_fork    57
 #define SYS_execve  59
+#define SYS_mouse_read 548
+
+/* M23: PS/2 mouse event (matches include/helix/ps2.h). */
+struct helix_mouse_event {
+    short dx, dy;
+    unsigned char buttons;
+    unsigned char _pad;
+};
 
 static inline long usyscall(long nr, long a0, long a1, long a2)
 {
@@ -20,6 +28,11 @@ static inline long usyscall(long nr, long a0, long a1, long a2)
         : "a"(nr), "D"(a0), "S"(a1), "d"(a2)
         : "rcx", "r11", "memory");
     return ret;
+}
+
+static inline long sys_mouse_read(struct helix_mouse_event *buf, unsigned long n)
+{
+    return usyscall(SYS_mouse_read, (long)buf, (long)n, 0);
 }
 
 static inline long sys_write(int fd, const void *buf, unsigned long n)
