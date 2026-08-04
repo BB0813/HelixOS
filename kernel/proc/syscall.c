@@ -1309,6 +1309,16 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case 55:  /* getsockopt */ret = sys_getsockopt_stub(f->a0, f->a1, f->a2, f->a3, f->a4); break;
     case 57:  /* fork */      ret = sys_fork(); break;
     case 59:  /* execve */    ret = sys_execve(f->a0, f->a1, f->a2); break;
+    /* M20: explicit ENOSYS for permission/timestamp syscalls (no kprintf spam). */
+    case 21:  /* access */     ret = ERR(ENOSYS); break;
+    case 90:  /* chmod */      ret = ERR(ENOSYS); break;
+    case 91:  /* fchmod */     ret = ERR(ENOSYS); break;
+    case 92:  /* chown */      ret = ERR(ENOSYS); break;
+    case 93:  /* fchown */     ret = ERR(ENOSYS); break;
+    case 94:  /* lchown */     ret = ERR(ENOSYS); break;
+    case 132: /* utime */      ret = ERR(ENOSYS); break;
+    case 133: /* utimes */     ret = ERR(ENOSYS); break;
+    case 280: /* utimensat */  ret = ERR(ENOSYS); break;
     case SYS_wait4:           ret = sys_wait4(f->a0, f->a1, f->a2, f->a3); break;
     case SYS_pipe:            ret = sys_pipe(f->a0); break;
     case SYS_fb_info:         ret = sys_fb_info(f->a0); break;

@@ -487,6 +487,17 @@ def main() -> int:
         default=[],
         help="hostpath:DEST/IN/ESP  (repeatable; DEST uses / separators)",
     )
+    ap.add_argument(
+        "--add-tree",
+        action="append",
+        default=[],
+        help="hostdir:DEST_PREFIX  (repeatable; recursively walks hostdir, strips hostdir prefix from each path; DEST_PREFIX may be '' for root)",
+    )
+    ap.add_argument(
+        "--raw-fat",
+        action="store_true",
+        help="write only the FAT volume (no GPT/MBR). For mtools verification.",
+    )
     args = ap.parse_args()
 
     with open(args.efi, "rb") as f:
@@ -504,6 +515,30 @@ def main() -> int:
         files.append((dest.replace("\\", "/"), data))
         print(f"  + {dest} ({len(data)} bytes from {host})")
 
+    for item in args.add_tree:
+        if "::" in item:
+            host_root, dest_prefix = item.split("::", 1)
+        else:
+            # host:dest syntax — split on last ':'
+            if ":" in item:
+                host_root, dest_prefix = item.rsplit(":", 1)
+            else:
+                host_root, dest_prefix = item, ""
+        host_root = host_root.rstrip("/\\")
+        dest_prefix = dest_prefix.replace("\\", "/").strip("/")
+        for dirpath, dirnames, filenames in os.walk(host_root):
+            rel = os.path.relpath(dirpath, host_root).replace("\\", "/")
+            for fn in filenames:
+                full = os.path.join(dirpath, fn)
+                with open(full, "rb") as f:
+                    data = f.read()
+                if rel == ".":
+                    dest = f"{dest_prefix}/{fn}" if dest_prefix else fn
+                else:
+                    dest = f"{dest_prefix}/{rel}/{fn}" if dest_prefix else f"{rel}/{fn}"
+                files.append((dest, data))
+                print(f"  + {dest} ({len(data)} bytes from {full})")
+
     esp_size = args.esp_mib * 1024 * 1024
     # M21: FAT32 once clusters would exceed 65524 (FAT16 limit). With spc=8,
     # that's roughly >32 MiB. Choose FAT32 conservatively at >=64 MiB.
@@ -512,6 +547,15 @@ def main() -> int:
         fat = build_fat32_volume(esp_size, files)
     else:
         fat = build_fat16_volume(esp_size, files)
+    if args.raw_fat:
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
+        with open(args.out, "wb") as f:
+            f.write(fat)
+        print(
+            f"wrote {args.out}: raw FAT volume ESP={args.esp_mib}MiB "
+            f"files={len(files)} bytes={len(fat)}"
+        )
+        return 0
     disk = build_gpt_disk(fat, args.disk_mib)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "wb") as f:

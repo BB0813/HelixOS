@@ -35,6 +35,14 @@ struct fat_file {
     char name83[11]; /* for dirent updates after write */
 };
 
+/* M20: dir iterator stored in fs_priv for subdirs. Root / uses NULL. */
+struct fat_dir_iter {
+    u16 clus;     /* current cluster; 0 = FAT16 root region */
+    u8  sec;      /* sector within cluster */
+    u16 off;      /* byte offset within sector (always 0..480 multiple of 32) */
+    u16 eof;      /* 1 once we hit the chain end */
+};
+
 static struct fat_fs g_fat;
 
 static int read_sector(u64 rel_lba, void *buf)
@@ -195,8 +203,10 @@ static int find_in_dir(u32 start_clus, const char want[11],
     return -1;
 }
 
-/* Resolve absolute path like /hello.txt or /bin/init.elf (leading / optional) */
-static int fat_resolve(const char *path, u32 *out_clus, u32 *out_size)
+/* Resolve absolute path like /hello.txt or /bin/init.elf (leading / optional).
+ * If out_attr is non-NULL, fills dirent's attribute byte (bit 0x10 = dir).
+ * Leaf dirs resolve successfully (caller may open them for getdents64). */
+static int fat_resolve(const char *path, u32 *out_clus, u32 *out_size, u8 *out_attr)
 {
     while (*path == '/')
         path++;
@@ -226,10 +236,11 @@ static int fat_resolve(const char *path, u32 *out_clus, u32 *out_size)
             dir_clus = cl;
             continue;
         }
-        if (attr & 0x10)
-            return -1; /* is dir */
+        /* leaf: report cluster + size + attr unconditionally */
         *out_clus = cl;
         *out_size = sz;
+        if (out_attr)
+            *out_attr = attr;
         return 0;
     }
 }
@@ -271,36 +282,89 @@ static long fat_getdents64(struct vfs_file *f, void *buf, u64 len)
 {
     if (!f->is_dir)
         return -20; /* ENOTDIR */
-    /* Only root dir listing for M5; pos tracks entry index */
+
     u8 sec[512];
     u64 produced = 0;
     u8 *out = buf;
-    u64 index = f->pos;
 
-    u32 max_entries;
-    if (g_fat.fat_type != 32)
-        max_entries = g_fat.root_ent_cnt;
-    else
-        max_entries = (g_fat.sec_per_clus * g_fat.byts_per_sec) / 32;
+    /* M20: dispatch on fs_priv. NULL → root directory (FAT16 fixed region or
+     * FAT32 root_clus). Otherwise → subdir iterator that walks cluster chain. */
+    int is_root = (f->fs_priv == 0);
+    struct fat_dir_iter *it = (struct fat_dir_iter *)f->fs_priv;
 
-    while (index < max_entries) {
-        u32 sec_i = (u32)(index * 32 / 512);
-        u32 off = (u32)(index * 32 % 512);
-        if (g_fat.fat_type != 32) {
-            if (sec_i >= g_fat.root_sectors)
+    /* Single-cluster cap for root (preserves M5 behavior). For subdirs we
+     * keep walking via the chain; the iterator is advanced across calls. */
+    u32 root_max_entries = 0;
+    if (is_root) {
+        if (g_fat.fat_type != 32)
+            root_max_entries = g_fat.root_ent_cnt;
+        else
+            root_max_entries = (g_fat.sec_per_clus * g_fat.byts_per_sec) / 32;
+    }
+
+    u64 index = f->pos;  /* entry index */
+    u32 local_sec_i = 0; /* used only for root */
+    u32 local_off = 0;
+
+    while (1) {
+        u8 *e;
+        if (is_root) {
+            if (index >= root_max_entries)
                 break;
-            if (read_sector(g_fat.root_lba + sec_i, sec) != 0)
-                return -5;
+            local_sec_i = (u32)(index * 32 / 512);
+            local_off = (u32)(index * 32 % 512);
+            if (g_fat.fat_type != 32) {
+                if (local_sec_i >= g_fat.root_sectors)
+                    break;
+                if (read_sector(g_fat.root_lba + local_sec_i, sec) != 0)
+                    return -5;
+            } else {
+                if (read_sector(clus_to_lba(g_fat.root_clus) + local_sec_i, sec) != 0)
+                    return -5;
+            }
+            e = &sec[local_off];
         } else {
-            if (read_sector(clus_to_lba(g_fat.root_clus) + sec_i, sec) != 0)
-                return -5;
+            /* Walk cluster chain via iterator. */
+            if (it->eof)
+                break;
+            if (it->clus == 0 && g_fat.fat_type != 32) {
+                /* FAT16 fixed root region (unreachable for subdir but safe) */
+                if (index >= root_max_entries)
+                    break;
+                local_sec_i = (u32)(index * 32 / 512);
+                local_off = (u32)(index * 32 % 512);
+                if (local_sec_i >= g_fat.root_sectors)
+                    break;
+                if (read_sector(g_fat.root_lba + local_sec_i, sec) != 0)
+                    return -5;
+                e = &sec[local_off];
+            } else {
+                u32 spc = g_fat.sec_per_clus;
+                u32 bps = g_fat.byts_per_sec;
+                if (it->off >= spc * bps) {
+                    /* Advance to next cluster. */
+                    u32 next = fat_get(it->clus);
+                    if (fat_is_eof(next) || next < 2) {
+                        it->eof = 1;
+                        break;
+                    }
+                    it->clus = (u16)next;
+                    it->sec = 0;
+                    it->off = 0;
+                }
+                if (read_sector(clus_to_lba(it->clus) + it->sec, sec) != 0)
+                    return -5;
+                e = &sec[it->off];
+            }
         }
-        u8 *e = &sec[off];
-        if (e[0] == 0)
+        if (e[0] == 0) {
+            if (!is_root)
+                it->eof = 1;
             break;
+        }
         index++;
         if (e[0] == 0xE5 || e[11] == 0x0F || (e[11] & 0x08))
-            continue;
+            goto advance;
         char name[13];
         ent_to_name(e, name);
         u16 namelen = (u16)strlen(name);
@@ -318,6 +382,11 @@ static long fat_getdents64(struct vfs_file *f, void *buf, u64 len)
         memcpy(de->d_name, name, namelen + 1);
         produced += reclen;
         f->pos = index;
+    advance:
+        if (!is_root)
+            it->off += 32;
+        if (is_root)
+            continue;
     }
     return (long)produced;
 }
@@ -935,13 +1004,36 @@ static int fat_open(const char *path, int flags, struct vfs_file **out)
     }
 
     u32 cl = 0, sz = 0;
+    u8 attr = 0;
     int need_create = (flags & VFS_O_CREAT) != 0;
-    if (fat_resolve(path, &cl, &sz) != 0) {
+    if (fat_resolve(path, &cl, &sz, &attr) != 0) {
         if (!need_create || !fat_writable_type())
             return -1;
         if (fat_create_root(path, 0, &cl) != 0)
             return -1;
         sz = 0;
+    } else if (attr & 0x10) {
+        /* M20: leaf is a directory — open for getdents64 (no read/write). */
+        struct fat_dir_iter *it = kmalloc(sizeof(*it));
+        if (!it)
+            return -1;
+        memset(it, 0, sizeof(*it));
+        /* FAT16 root uses cluster 0 + root_lba/root_sectors; otherwise store
+         * the cluster and let getdents64 walk the chain. */
+        it->clus = (g_fat.fat_type == 32) ? (u16)cl : 0;
+        struct vfs_file *vf = kmalloc(sizeof(*vf));
+        if (!vf) {
+            kfree(it);
+            return -1;
+        }
+        memset(vf, 0, sizeof(*vf));
+        vf->ops = fat_vfs_ops();
+        vf->fs_priv = it;
+        vf->is_dir = 1;
+        vf->pos = 0;
+        vf->size = 0;
+        *out = vf;
+        return 0;
     } else if ((flags & VFS_O_TRUNC) && fat_writable_type()) {
         /* Truncate: mark first cluster EOF, size 0 (may leak old chain). */
         if (cl >= 2)
@@ -1095,7 +1187,7 @@ int fat_selftest_write(void)
 
     /* Resolve via path lookup (proves dirent visible) */
     u32 cl = 0, sz = 0;
-    if (fat_resolve(path, &cl, &sz) != 0) {
+    if (fat_resolve(path, &cl, &sz, 0) != 0) {
         kprintf("[fat] selftest resolve after write failed\n");
         return -1;
     }

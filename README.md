@@ -23,7 +23,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M19, M21–M23 + 路线 D 已完成**（2026-08-05；路线 A→B→C→D 全部完成）
+**M0–M20, M21–M23 + 路线 D 已完成**（2026-08-05；路线 A→B→C→D 全部完成）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -50,6 +50,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | **D1** | **smoke-net 闭环**（端口等待 + HelixTcpUserOK/PassiveOK hard-fail + max-retries 节流） | **`HelixTcpUserOK` + `HelixTcpPassiveOK`** |
 | **D2** | **FAT32 nested dir 修复**（`is_root` flag + root 走 `materialize_dir`） | EFI/BOOT/BOOTX64.EFI 可达（mtools mdir 验证） |
 | **D3** | **msh 行规程增强**（ps2 0xE0 + ESC 箭头键 + cursor/history/Ctrl+A-E-W-U） | `make` EXIT=0；`smoke-linux` EXIT=0 |
+| **M20** | **VFS ext + 用户态补全**（FAT subdir 走 cluster chain + chmod/chown/utimes 显式 ENOSYS + 4 级 subdir 验证 + /etc 资产） | `root:x:0:0:root:/root:/bin/sh` + `HELIX_WELCOME_OK` |
 
 ## 快速开始
 

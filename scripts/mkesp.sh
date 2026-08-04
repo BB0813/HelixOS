@@ -38,6 +38,13 @@ cd "$ROOT"
 if [[ -f esp_assets/hello.txt ]]; then
   ADD_ARGS+=(--add "esp_assets/hello.txt:hello.txt")
 fi
+# M20: extra smoke assets for cat /etc/* tests
+if [[ -f esp_assets/welcome.txt ]]; then
+  ADD_ARGS+=(--add "esp_assets/welcome.txt:etc/welcome.txt")
+fi
+if [[ -f esp_assets/passwd ]]; then
+  ADD_ARGS+=(--add "esp_assets/passwd:etc/passwd")
+fi
 if [[ -f build/user/init.elf ]]; then
   ADD_ARGS+=(--add "build/user/init.elf:bin/init.elf")
 fi

@@ -519,6 +519,20 @@ static void cmd_smoke(void)
         xwrite("tmp open failed\n");
     }
 
+    /* M20: FAT subdir iteration probe — /etc/passwd and /etc/welcome.txt
+     * are staged on ESP; verify getdents64 + open work past root. */
+    {
+        char *ls_etc[] = { "ls", "/etc", 0 };
+        cmd_ls(2, ls_etc);
+        char *cat_passwd[] = { "cat", "/etc/passwd", 0 };
+        cmd_cat(2, cat_passwd);
+        char *cat_welcome[] = { "cat", "/etc/welcome.txt", 0 };
+        cmd_cat(2, cat_welcome);
+        /* /lib was the canary for subdir getdents64 (always-present in ESP). */
+        char *ls_lib[] = { "ls", "/lib", 0 };
+        cmd_ls(2, ls_lib);
+    }
+
     /* M8: UDP echo self-test (local loopback) */
     {
         /* AF_INET=2, SOCK_DGRAM=2, UDP=17 */

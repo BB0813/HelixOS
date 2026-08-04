@@ -62,6 +62,15 @@
 | 257 | openat | **done** | 重定向至 open |
 | 262 | newfstatat | **done** | 重定向至 fstatat |
 | 318 | getrandom | **done** | 软实现（ticks） |
+| 90 | chmod | **ENOSYS** | M20 显式 -ENOSYS（无 kprintf 刷屏） |
+| 91 | fchmod | **ENOSYS** | M20 |
+| 92 | chown | **ENOSYS** | M20 |
+| 93 | fchown | **ENOSYS** | M20 |
+| 94 | lchown | **ENOSYS** | M20 |
+| 21 | access | **ENOSYS** | M20 显式 -ENOSYS |
+| 132 | utime | **ENOSYS** | M20 |
+| 133 | utimes | **ENOSYS** | M20 |
+| 280 | utimensat | **ENOSYS** | M20 |
 | 546 | sys_fb_info (custom) | **done** | M18：返回 `{width, height, pitch, bpp, size}` |
 | 547 | sys_readkey (custom) | **done** | M18：非阻塞 PS/2 键盘读取 |
 | 548 | sys_mouse_read (custom) | **done** | M23：非阻塞 PS/2 鼠标读取，返回 `{dx, dy, buttons}` 数组；空时 -EAGAIN (-11) |
@@ -109,4 +118,5 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-04 | M22 抢占式调度：timer.c 加 `g_preempt_pending` 累加 + `timer_preempt_pending()` xchg-clear + `PREEMPT_THRESHOLD=8`；syscall.c 返回路径加抢占检查（gate 1: `task_count_alive()>1`, gate 2: 阈值），命中后 `task_yield()`；helixbox 加 `HelixPreemptOK` smoke marker（fork 心跳 child 写 20 dots）；smoke-fs 不回归，smoke-net HelixTcpUserOK/HelixTcpPassiveOK 不回归 |
 | 2026-08-05 | M23 PS/2 鼠标：`kernel/drv/ps2.c` 抽 `ps2_write_cmd`/`ps2_write_aux`/`ps2_flush_data` helper；`ps2_init` 第二阶段启用 aux port + IRQ12 + 100Hz sample rate；`ps2_mouse_handler` 累积 3-byte packet → `{dx,dy,buttons}` ring buffer（y 轴翻转）；`sys_mouse_read`(548) 非阻塞 drain，空时 -EAGAIN；helixbox 加 `HelixMouseOK` smoke marker；smoke-fs EXIT=0 不回归 |
 | 2026-08-05 | **路线 D 收尾**：D1 `Makefile` smoke-net 端口等待 + `HelixTcpUserOK`/`HelixTcpPassiveOK` 升 hard-fail + `kernel/net/tcp.c` max-retries log 节流 30s；D2 `scripts/mkdisk.py` FAT32 root 路径走 `materialize_dir` + `is_root` flag 修 nested dir bug（mtools mdir 验证 EFI/BOOT/BOOTX64.EFI 可达）；D3 `kernel/drv/ps2.c` 加 0xE0 prefix 翻译箭头键 ESC [ A/B/C/D + `user/msh.c` msh_readline 重写为 cursor + 16 history + Ctrl+A/E/W/U/C |
+| 2026-08-05 | M20 VFS ext：`fat_getdents64` 改用 `fs_priv` 存 `fat_dir_iter` 走 cluster chain（subdir open 完整）；`fat_resolve` 加 `out_attr` 报告 leaf 是 dir；`fat_open` 检测 `attr & 0x10` 时返回 `is_dir=1` + `fs_priv=fat_dir_iter`；`syscall.c` 加 `case 21/90/91/92/93/94/132/133/280` 显式 -ENOSYS（不刷屏）；`mkdisk.py` 加 `--add-tree` + `--raw-fat` 标志；`mkdisk_deep.sh` 4 级目录验证 + mtools mdir 验证；helixbox `cmd_smoke` 加 subdir 探针 (`ls /etc` / `cat /etc/passwd` / `cat /etc/welcome.txt` / `ls /lib`) |
 

@@ -231,6 +231,26 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **验收**：`make smoke-fs`（FAT16 不回归）+ 64 MiB FAT32 大盘镜像两次连 boot → `selftest OK (FAT32): HelixFATWriteOK`，HELIXW.TXT cluster 两次都是 3（重新分配）
 - **已知限制**：`build_fat32_volume` 嵌套子目录 materialization 有 bug。FAT32 验证路径用 mformat + mcopy 注入 flat root（避免嵌套递归）
 
+### M20 — VFS ext + 用户态补全
+
+- **FAT subdir 完整**：
+  - `kernel/fs/fat.c` 加 `struct fat_dir_iter { u16 clus; u8 sec; u16 off; u16 eof; }`；`fs_priv` 存 dir state
+  - `fat_resolve` 加 `u8 *out_attr` 参数；leaf 是 dir 时返回 0 + cluster + attr（之前返回 -1）
+  - `fat_open` 检测 `attr & 0x10` 时创建 `vfs_file` with `is_dir=1` + `fs_priv=fat_dir_iter`，不走 `fat_file` 路径
+  - `fat_getdents64` 重写：subdir 用 `it->clus` + `clus_to_lba` + `fat_get()` 沿 chain walk；
+    EOF mark (`0x0FFFFFF8`/`0xFFF8`) 触发 break；FAT16 root 保留 fixed-region 路径
+- **Permission syscall 显式 ENOSYS**：
+  - `kernel/proc/syscall.c` 在 `case 59 execve` 后加 `case 21/90/91/92/93/94/132/133/280` → `ret = ERR(ENOSYS); break;`
+  - 绕过 default 分支的 `kprintf` 刷屏；BusyBox 收到 ENOSYS 走标准错误路径
+- **FAT 深嵌套子目录验证**：
+  - `scripts/mkdisk_deep.sh` 构建 `out/helix-deep.raw.img`（raw FAT volume，mtools 可读）
+  - 4 级目录 `a/b/c/d/file.txt` + 每级一个 levelN.txt
+  - `mkdisk.py` 加 `--add-tree HOSTDIR::`（递归 walk）和 `--raw-fat`（输出无 GPT 包装的 FAT volume）
+  - mtools `mdir -/ -i out/helix-deep.raw.img ::a/b/c/d` 列出 file.txt；`mtype` 输出 `HELIX_DEEP_OK`
+- **/etc 资产 stage**：`esp_assets/passwd` (root entry) + `esp_assets/welcome.txt`
+  (`HELIX_WELCOME_OK\n`) → `mkesp.sh` 写到 ESP `/etc/`
+- **helixbox subdir probe**：`cmd_smoke` 加 `ls /etc` + `cat /etc/passwd` + `cat /etc/welcome.txt` + `ls /lib` 4 个探针，验证 kernel subdir getdents64 + open
+
 
 ## Subsystems (target shape)
 

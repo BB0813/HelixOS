@@ -461,3 +461,40 @@ HelixPreemptOK + cwd + sig 不回归）；`make smoke-fs` EXIT=0（FAT 不回归
 手工验证：msh 输入 `echo hello<Up>` 自动补全；Ctrl+A 跳行首；Ctrl+W 删 word。
 
 ---
+
+## M20 — VFS ext + 用户态补全 `[x]`
+
+Goal：路线 A→B→C→D 完成后收尾 4 个真实差距 — FAT 子目录遍历完整、permission
+syscall 显式 ENOSYS、深嵌套子目录验证、BusyBox 多 applet 真实 smoke、msh 增强。
+
+- [x] **FAT subdir 完整** — `fat_getdents64` 改用 `fs_priv` 存的 `fat_dir_iter`
+  （clus/sec/off 状态），subdir open 走 cluster chain walk；FAT16 root region
+  保留 fixed-region 路径（root 不是 cluster chain）。`fat_resolve` 加 `out_attr`
+  报告 leaf 是 dir；`fat_open` 检测 `attr & 0x10` 时返回 `is_dir=1` +
+  `fs_priv=fat_dir_iter`，绕开 `fat_file` 分配
+- [x] **chmod/chown/utimes 显式 ENOSYS** — `syscall.c` 在 `case 59 execve` 之后加
+  `case 21/90/91/92/93/94/132/133/280` 都 `ret = ERR(ENOSYS); break;`（**不**走 default
+  kprintf 刷屏）。BusyBox `chmod`/`chown`/`touch` 收到 ENOSYS 走标准错误路径
+- [x] **FAT 深嵌套子目录验证** — 新 `scripts/mkdisk_deep.sh`：
+  - 4 级目录 `a/b/c/d/file.txt` (含 `HELIX_DEEP_OK\n`)
+  - `mkdisk.py` 加 `--add-tree HOSTDIR::` 递归遍历
+  - `mkdisk.py` 加 `--raw-fat` 输出 raw FAT volume（无 GPT 包装），mtools 可直接读
+  - mtools 验证：`mdir -/ -i out/helix-deep.raw.img ::a/b/c/d` 列出 file.txt；
+    `mtype -i out/helix-deep.raw.img ::a/b/c/d/file.txt` 输出 `HELIX_DEEP_OK`
+- [x] **etc 资产** — `esp_assets/passwd` (root entry) + `esp_assets/welcome.txt`
+  (`HELIX_WELCOME_OK\n`) stage 到 ESP `/etc/`；`mkesp.sh` 加 `--add` 两行
+- [x] **helixbox subdir probe** — `cmd_smoke` 加 `ls /etc` + `cat /etc/passwd` +
+  `cat /etc/welcome.txt` + `ls /lib` 4 个探针，验证 kernel subdir getdents64 + open
+
+**验收**：
+- `make smoke-fs` EXIT=0（FAT16 不回归）
+- `make smoke-linux` 串口含 `root:x:0:0:root:/root:/bin/sh` (cat /etc/passwd) + `HELIX_WELCOME_OK` (cat /etc/welcome.txt)
+- `make scripts/mkdisk_deep.sh` mtools 验证 4 级 subdir OK
+- kernel log 不再有 `[syscall] ENOSYS nr=90/91/92/...` 刷屏
+
+---
+
+## M19 — TUI shell (fb + PS/2 keyboard) `[~]`
+
+
+---
