@@ -321,8 +321,9 @@ static int bi_ls(int argc, char **argv)
 
 static int bi_help(void)
 {
-    msh_write("msh: HelixOS shell (M12)\n");
+    msh_write("msh: HelixOS shell (M20)\n");
     msh_write("  echo | cat | ls | cd | pwd | exit | help\n");
+    msh_write("  alias | unalias | export | unset | test | [ ] | type\n");
     msh_write("  pipelines: cmd1 | cmd2 | ...\n");
     return 0;
 }
@@ -347,6 +348,247 @@ static int bi_cd(int argc, char **argv)
     if (r < 0) {
         msh_write("cd: failed\n");
         return 1;
+    }
+    return 0;
+}
+
+/* --- M20 builtins: alias, unalias, export, unset, test/[ , type --- */
+
+#define MSH_ALIAS_MAX 16
+#define MSH_NAME_MAX  32
+#define MSH_VAL_MAX   64
+#define MSH_ENV_MAX   32
+
+static struct { char name[MSH_NAME_MAX]; char value[MSH_VAL_MAX]; } msh_aliases[MSH_ALIAS_MAX];
+static struct { char name[MSH_NAME_MAX]; char value[MSH_VAL_MAX]; } msh_envtab[MSH_ENV_MAX];
+
+static void msh_copy_token(char *dst, const char *src, int cap)
+{
+    int n = 0;
+    while (src[n] && n < cap - 1) { dst[n] = src[n]; n++; }
+    dst[n] = 0;
+}
+
+/* alias [name[=value] ...] — list or define */
+static int bi_alias(int argc, char **argv)
+{
+    int defined = 0;
+    for (int i = 1; i < argc; i++) {
+        /* find '=' */
+        char *eq = 0;
+        for (char *p = argv[i]; *p; p++) if (*p == '=') { eq = p; break; }
+        if (!eq) {
+            /* print existing */
+            int found = 0;
+            for (int k = 0; k < MSH_ALIAS_MAX; k++) {
+                if (msh_aliases[k].name[0] &&
+                    msh_streq(msh_aliases[k].name, argv[i])) {
+                    msh_write("alias ");
+                    msh_write(msh_aliases[k].name);
+                    msh_write("='");
+                    msh_write(msh_aliases[k].value);
+                    msh_write("'\n");
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) { msh_write("alias: not found: "); msh_write(argv[i]); msh_write("\n"); }
+            continue;
+        }
+        /* define: name=body */
+        int slot = -1;
+        for (int k = 0; k < MSH_ALIAS_MAX; k++) {
+            if (!msh_aliases[k].name[0]) { slot = k; break; }
+            /* replace if same name */
+            char tmp[MSH_NAME_MAX];
+            int nl = (int)(eq - argv[i]);
+            if (nl >= MSH_NAME_MAX) nl = MSH_NAME_MAX - 1;
+            for (int j = 0; j < nl; j++) tmp[j] = argv[i][j];
+            tmp[nl] = 0;
+            if (msh_streq(msh_aliases[k].name, tmp)) { slot = k; break; }
+        }
+        if (slot < 0) { msh_write("alias: table full\n"); continue; }
+        int nl = (int)(eq - argv[i]);
+        if (nl >= MSH_NAME_MAX) nl = MSH_NAME_MAX - 1;
+        for (int j = 0; j < nl; j++) msh_aliases[slot].name[j] = argv[i][j];
+        msh_aliases[slot].name[nl] = 0;
+        msh_copy_token(msh_aliases[slot].value, eq + 1, MSH_VAL_MAX);
+        defined++;
+    }
+    if (argc == 1) {
+        for (int k = 0; k < MSH_ALIAS_MAX; k++) {
+            if (!msh_aliases[k].name[0]) continue;
+            msh_write("alias ");
+            msh_write(msh_aliases[k].name);
+            msh_write("='");
+            msh_write(msh_aliases[k].value);
+            msh_write("'\n");
+            defined++;
+        }
+    }
+    return defined > 0 ? 0 : 1;
+}
+
+static int bi_unalias(int argc, char **argv)
+{
+    if (argc < 2) { msh_write("unalias: need name\n"); return 1; }
+    for (int i = 1; i < argc; i++) {
+        for (int k = 0; k < MSH_ALIAS_MAX; k++) {
+            if (msh_aliases[k].name[0] && msh_streq(msh_aliases[k].name, argv[i])) {
+                msh_aliases[k].name[0] = 0;
+                msh_aliases[k].value[0] = 0;
+            }
+        }
+    }
+    return 0;
+}
+
+static int bi_export(int argc, char **argv)
+{
+    int n = 0;
+    for (int i = 1; i < argc; i++) {
+        char *eq = 0;
+        for (char *p = argv[i]; *p; p++) if (*p == '=') { eq = p; break; }
+        if (!eq) { msh_write("export: need NAME=VALUE\n"); continue; }
+        int slot = -1;
+        for (int k = 0; k < MSH_ENV_MAX; k++) {
+            if (!msh_envtab[k].name[0]) { slot = k; break; }
+            char tmp[MSH_NAME_MAX];
+            int nl = (int)(eq - argv[i]);
+            if (nl >= MSH_NAME_MAX) nl = MSH_NAME_MAX - 1;
+            for (int j = 0; j < nl; j++) tmp[j] = argv[i][j];
+            tmp[nl] = 0;
+            if (msh_streq(msh_envtab[k].name, tmp)) { slot = k; break; }
+        }
+        if (slot < 0) { msh_write("export: env table full\n"); continue; }
+        int nl = (int)(eq - argv[i]);
+        if (nl >= MSH_NAME_MAX) nl = MSH_NAME_MAX - 1;
+        for (int j = 0; j < nl; j++) msh_envtab[slot].name[j] = argv[i][j];
+        msh_envtab[slot].name[nl] = 0;
+        msh_copy_token(msh_envtab[slot].value, eq + 1, MSH_VAL_MAX);
+        n++;
+    }
+    return n > 0 ? 0 : 1;
+}
+
+static int bi_unset(int argc, char **argv)
+{
+    if (argc < 2) { msh_write("unset: need name\n"); return 1; }
+    for (int i = 1; i < argc; i++) {
+        for (int k = 0; k < MSH_ENV_MAX; k++) {
+            if (msh_envtab[k].name[0] && msh_streq(msh_envtab[k].name, argv[i])) {
+                msh_envtab[k].name[0] = 0;
+                msh_envtab[k].value[0] = 0;
+            }
+        }
+    }
+    return 0;
+}
+
+/* test / [ — supports -f FILE, -z STR, -n STR, STR = STR, NUM -eq NUM */
+static int bi_test(int argc, char **argv)
+{
+    /* drop trailing ']' if [ form */
+    if (argc > 1 && msh_streq(argv[0], "[")) {
+        if (!msh_streq(argv[argc - 1], "]")) {
+            msh_write("[: missing ']'\n");
+            return 2;
+        }
+        argc--; /* drop the ] */
+    }
+    if (argc < 2) { msh_write("test: need expr\n"); return 2; }
+
+    /* Check unary flag-like ops first: -z/-n/-e/-f all take exactly one arg,
+     * regardless of total argc (3 = test -f FILE, 4 = [ -f FILE ]). */
+    if (argc >= 3 && argv[1][0] == '-' && argv[1][1] != '\0') {
+        const char *op = argv[1];
+        const char *arg = argv[2];
+        if (msh_streq(op, "-z")) return arg[0] == 0 ? 0 : 1;
+        if (msh_streq(op, "-n")) return arg[0] != 0 ? 0 : 1;
+        if (msh_streq(op, "-f") || msh_streq(op, "-e")) {
+            long fd = usys6(SYS_open, (long)arg, 0, 0, 0, 0, 0);
+            if (fd < 0) return 1;
+            usys6(SYS_close, fd, 0, 0, 0, 0, 0);
+            return 0;
+        }
+        /* fall through: maybe a binary op — keep going */
+    }
+
+    if (argc == 2) {
+        /* unary: -e/-f FILE or -z/-n STR */
+        const char *op = argv[1];
+        const char *arg = argc > 2 ? argv[2] : "";
+        if (msh_streq(op, "-z")) return arg[0] == 0 ? 0 : 1;
+        if (msh_streq(op, "-n")) return arg[0] != 0 ? 0 : 1;
+        if (msh_streq(op, "-f") || msh_streq(op, "-e")) {
+            long fd = usys6(SYS_open, (long)arg, 0, 0, 0, 0, 0);
+            if (fd < 0) return 1;
+            usys6(SYS_close, fd, 0, 0, 0, 0, 0);
+            return 0;
+        }
+        msh_write("test: unknown unary: "); msh_write(op); msh_write("\n");
+        return 2;
+    }
+
+    if (argc == 3) {
+        if (msh_streq(argv[1], "="))  return msh_streq(argv[2], argv[3]) ? 0 : 1;
+        if (msh_streq(argv[1], "!=")) return msh_streq(argv[2], argv[3]) ? 1 : 0;
+        msh_write("test: need binary expr\n");
+        return 2;
+    }
+
+    if (argc == 4) {
+        /* INT -eq/-ne/-lt/-gt INT */
+        const char *op = argv[2];
+        long a = 0, b = 0;
+        int neg = 0;
+        const char *pa = argv[1], *pb = argv[3];
+        if (*pa == '-') { neg = 1; pa++; }
+        while (*pa >= '0' && *pa <= '9') a = a * 10 + (*pa++ - '0');
+        if (neg) a = -a;
+        neg = 0;
+        if (*pb == '-') { neg = 1; pb++; }
+        while (*pb >= '0' && *pb <= '9') b = b * 10 + (*pb++ - '0');
+        if (neg) b = -b;
+        if (msh_streq(op, "-eq")) return a == b ? 0 : 1;
+        if (msh_streq(op, "-ne")) return a != b ? 0 : 1;
+        if (msh_streq(op, "-lt")) return a <  b ? 0 : 1;
+        if (msh_streq(op, "-gt")) return a >  b ? 0 : 1;
+        msh_write("test: unknown binary: "); msh_write(op); msh_write("\n");
+        return 2;
+    }
+    msh_write("test: too many args\n");
+    return 2;
+}
+
+/* type NAME — print builtin vs would-exec */
+static int bi_type(int argc, char **argv)
+{
+    if (argc < 2) { msh_write("type: need name\n"); return 1; }
+    for (int i = 1; i < argc; i++) {
+        const char *n = argv[i];
+        int is_builtin = msh_streq(n, "echo") || msh_streq(n, "cat") ||
+                         msh_streq(n, "ls") || msh_streq(n, "cd") || msh_streq(n, "pwd") ||
+                         msh_streq(n, "alias") || msh_streq(n, "unalias") ||
+                         msh_streq(n, "export") || msh_streq(n, "unset") ||
+                         msh_streq(n, "test") || msh_streq(n, "[") ||
+                         msh_streq(n, "type") || msh_streq(n, "help") ||
+                         msh_streq(n, "exit");
+        msh_write(is_builtin ? "builtin: " : "exec: ");
+        msh_write(n);
+        msh_write("\n");
+    }
+    return 0;
+}
+
+/* Public entry for getting an alias value (returns 0 if not found). */
+int msh_lookup_alias(const char *name, char *out, int cap)
+{
+    for (int k = 0; k < MSH_ALIAS_MAX; k++) {
+        if (msh_aliases[k].name[0] && msh_streq(msh_aliases[k].name, name)) {
+            msh_copy_token(out, msh_aliases[k].value, cap);
+            return 1;
+        }
     }
     return 0;
 }
@@ -454,6 +696,11 @@ static void msh_prompt(void)
     msh_write("msh> ");
 }
 
+/* Forward decls — `msh_exec_line` splits on ';' and calls `msh_exec_pipeline`;
+ * the strtok helper is also used inside that split. */
+static char *msh_strtok_r(char *str, char sep, char **save);
+static int msh_exec_pipeline(char *line);
+
 /* Execute one command line (may contain '|'). Returns exit status. */
 static int msh_exec_line(const char *cline)
 {
@@ -464,6 +711,46 @@ static int msh_exec_line(const char *cline)
         i++;
     }
     line[i] = 0;
+
+    /* M20: split on ';' first (statement separator), then each statement
+     * splits on '|' (pipeline stages). */
+    int last_status = 0;
+    char *stmt_save = 0;
+    char *stmt = msh_strtok_r(line, ';', &stmt_save);
+    while (stmt) {
+        int rc = msh_exec_pipeline(stmt);
+        last_status = rc;
+        stmt = msh_strtok_r(0, ';', &stmt_save);
+    }
+    return last_status;
+}
+
+/* strtok_r-lite: returns next token from `str` split on a single `sep` char,
+ * skipping leading separators. Empty tokens are skipped (so "a;;b" yields
+ * "a" then "b"). Sets *save to track position. */
+static char *msh_strtok_r(char *str, char sep, char **save)
+{
+    char *p = str ? str : *save;
+    while (*p) {
+        if (*p != sep) break;
+        p++;
+    }
+    if (!*p) { *save = p; return 0; }
+    char *start = p;
+    while (*p) {
+        if (*p == sep) break;
+        p++;
+    }
+    if (*p) { *p = 0; *save = p + 1; } else { *save = p; }
+    return start;
+}
+
+/* Execute one pipeline (no ';') — splits on '|' and runs each stage. */
+static int msh_exec_pipeline(char *line)
+{
+    /* skip leading whitespace */
+    while (*line == ' ' || *line == '\t') line++;
+    if (!*line) return 0;
 
     /* split into pipeline stages on '|' */
     char *stages[8];
@@ -482,6 +769,45 @@ static int msh_exec_line(const char *cline)
     char **argv_list[8];
     char **argv0 = argv_list[0] = (char *[MSH_ARGV_MAX]){0};
     int argc0 = msh_tokenize(stages[0], argv0);
+
+    /* M20: expand alias for stage 0 (simple: name=value with no spaces in body).
+     * If argv0[0] is a known alias, swap in the alias's argv. */
+    if (argc0 > 0) {
+        char aval[MSH_VAL_MAX];
+        if (msh_lookup_alias(argv0[0], aval, MSH_VAL_MAX)) {
+            /* Re-tokenize the alias body into argv0[0..N], shift original args. */
+            char tmp[MSH_LINE_MAX];
+            int n = 0;
+            while (aval[n] && n < MSH_LINE_MAX - 1) { tmp[n] = aval[n]; n++; }
+            int aextra = argc0 - 1;
+            if (aextra > 0) {
+                /* space between body and trailing args */
+                tmp[n++] = ' ';
+                int sn = 0;
+                for (int k = 1; k < argc0; k++) {
+                    int l = 0;
+                    while (argv0[k][l]) l++;
+                    if (n + sn + l + 2 < MSH_LINE_MAX) {
+                        for (int j = 0; j < l; j++) tmp[n + sn + j] = argv0[k][j];
+                        sn += l;
+                        if (k < argc0 - 1) {
+                            tmp[n + sn] = ' ';
+                            sn++;
+                        }
+                    }
+                }
+                tmp[n + sn] = 0;
+            } else {
+                tmp[n] = 0;
+            }
+            char **new_argv = (char *[MSH_ARGV_MAX]){0};
+            int new_argc = msh_tokenize(tmp, new_argv);
+            /* Copy back into argv0 slot. */
+            for (int k = 0; k <= new_argc; k++) argv0[k] = new_argv[k];
+            argc0 = new_argc;
+            stages[0] = tmp;
+        }
+    }
     if (argc0 == 0)
         return 0;
     if (msh_streq(argv0[0], "exit"))
@@ -496,6 +822,14 @@ static int msh_exec_line(const char *cline)
         if (msh_streq(argv0[0], "ls"))   return bi_ls(argc0, argv0);
         if (msh_streq(argv0[0], "cd"))   return bi_cd(argc0, argv0);
         if (msh_streq(argv0[0], "pwd"))  return bi_pwd();
+        /* M20: extended builtins */
+        if (msh_streq(argv0[0], "alias"))   return bi_alias(argc0, argv0);
+        if (msh_streq(argv0[0], "unalias")) return bi_unalias(argc0, argv0);
+        if (msh_streq(argv0[0], "export"))  return bi_export(argc0, argv0);
+        if (msh_streq(argv0[0], "unset"))   return bi_unset(argc0, argv0);
+        if (msh_streq(argv0[0], "type"))    return bi_type(argc0, argv0);
+        if (msh_streq(argv0[0], "test"))    return bi_test(argc0, argv0);
+        if (msh_streq(argv0[0], "["))       return bi_test(argc0, argv0);
     }
     for (int i = 1; i < nstages; i++) {
         char **av = argv_list[i] = (char *[MSH_ARGV_MAX]){0};
@@ -506,7 +840,7 @@ static int msh_exec_line(const char *cline)
 
 void msh_main(int argc, char **argv)
 {
-    msh_write("HelixOS msh (M12) — fork/exec/waitpid/pipe/cwd shell\n");
+    msh_write("HelixOS msh (M20) — fork/exec/waitpid/pipe/cwd shell\n");
 
     /* Non-interactive: msh -c "command" */
     if (argc >= 3 && msh_streq(argv[1], "-c")) {

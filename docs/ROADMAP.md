@@ -485,10 +485,28 @@ syscall 显式 ENOSYS、深嵌套子目录验证、BusyBox 多 applet 真实 smo
   (`HELIX_WELCOME_OK\n`) stage 到 ESP `/etc/`；`mkesp.sh` 加 `--add` 两行
 - [x] **helixbox subdir probe** — `cmd_smoke` 加 `ls /etc` + `cat /etc/passwd` +
   `cat /etc/welcome.txt` + `ls /lib` 4 个探针，验证 kernel subdir getdents64 + open
+- [x] **BusyBox 多 applet 真实 smoke** — `linux_compat_run_busybox_applets` 在
+  `exec.c` 用 `g_bb_applets[][16]` 5-applet 表 + 模块级 `g_bb_idx` 状态。
+  每个 applet exit → `task_set_exit_all_hook(linux_compat_run_busybox_applets)`
+  自递归 → next applet。Applet 链：`echo HelixBusyBoxOK` → `cat /etc/welcome.txt`
+  → `echo BB2_OK` → `true` → `echo HELIX_BB_DONE`。最后 → `msh_compat_run_smoke`
+- [x] **msh 增强 (6 builtin)** — `user/msh.c` 加 `bi_alias` / `bi_unalias` /
+  `bi_export` / `bi_unset` / `bi_test` (含 `[` 形式) / `bi_type`。文件静态
+  `msh_aliases[16]` + `msh_envtab[32]` 表。**`msh_exec_line` 重构**：拆为
+  `msh_exec_line` + `msh_exec_pipeline` + `msh_strtok_r`；支持 `;` statement
+  separator。**alias expansion** 在 `msh_exec_pipeline` 早段：lookup alias body
+  → 拼接 `body` + space + tail args → 重 tokenize → 替换 argv0
+- [x] **msh bi_test fix** — `-f FILE` 单参操作符优先于 binary `=` 检查
+  (避免 "test: need binary expr" 误报)。`/hello.txt` 存在 → 退出码 0
+- [x] **kernel heap bump** — `heap.c` HEAP_PAGES 1024 → 2048 (4 → 8 MiB)，
+  容纳 3+ BusyBox ELF 重 load (each ≈ 1.1 MiB)
 
 **验收**：
 - `make smoke-fs` EXIT=0（FAT16 不回归）
-- `make smoke-linux` 串口含 `root:x:0:0:root:/root:/bin/sh` (cat /etc/passwd) + `HELIX_WELCOME_OK` (cat /etc/welcome.txt)
+- `make smoke-linux` 串口含 `root:x:0:0:root:/root:/bin/sh` (cat /etc/passwd) +
+  `HELIX_WELCOME_OK` (cat /etc/welcome.txt) + `BusyBox chain done (5 applets)`
+  + `HELIX_MSH_ALIAS_OK` (alias) + `HELIX_MSH_EXPORT_OK` (export) +
+  `HELIX_MSH_TEST_OK` (test -f) + `HELIX_MSH_DONE` (pipe + cat)
 - `make scripts/mkdisk_deep.sh` mtools 验证 4 级 subdir OK
 - kernel log 不再有 `[syscall] ENOSYS nr=90/91/92/...` 刷屏
 

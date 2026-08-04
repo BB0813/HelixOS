@@ -19,7 +19,7 @@ static u8 *g_heap_base;
 static u64 g_heap_size;
 static struct freenode *g_free;
 
-#define HEAP_PAGES  1024ull        /* 4 MiB — load BusyBox (~1.1MiB) + dyn ELFs */
+#define HEAP_PAGES  2048ull        /* 8 MiB — load BusyBox (~1.1MiB) + dyn ELFs */
 #define HDR_SIZE    ((u64)sizeof(struct freenode))
 #define MIN_BLOCK   (HDR_SIZE + 16)
 

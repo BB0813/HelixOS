@@ -13,6 +13,49 @@
 
 static void linux_compat_run_helixbox(void);
 
+/* M20: multi-applet BusyBox smoke chain. Each applet exits → hook advances
+ * the index. State lives in module-scope statics. The chain keeps busybox
+ * ELF loads low (each load = 1.1 MiB heap) so we cap at 5 applets. */
+static int g_bb_idx = 0;
+static const char *g_bb_path = 0;
+static const char *g_bb_applets[][16] = {
+    /* [0] echo (preserves the legacy HelixBusyBoxOK marker) */
+    { "echo", "HelixBusyBoxOK", 0 },
+    /* [1] cat /etc/welcome.txt — exercises M20 subdir open */
+    { "cat", "/etc/welcome.txt", 0 },
+    /* [2] echo BB_2 — exercises stdout write again */
+    { "echo", "BB2_OK", 0 },
+    /* [3] true (exit 0) */
+    { "true", 0 },
+    /* [4] echo HELIX_BB_DONE — final marker */
+    { "echo", "HELIX_BB_DONE", 0 },
+};
+#define BB_APPLET_COUNT (int)(sizeof(g_bb_applets) / sizeof(g_bb_applets[0]))
+
+static void linux_compat_run_busybox_applets(void);
+
+static void linux_compat_run_busybox_applets(void)
+{
+    if (g_bb_idx >= BB_APPLET_COUNT) {
+        /* All applets done; continue with msh then helixbox. */
+        kprintf("[linux] BusyBox chain done (%d applets)\n", BB_APPLET_COUNT);
+        msh_compat_run_smoke();
+        return;
+    }
+    const char *name = g_bb_applets[g_bb_idx][0];
+    kprintf("[linux] BB[%d/%d]: %s\n", g_bb_idx + 1, BB_APPLET_COUNT, name);
+    struct task *t = task_exec_path(name, g_bb_path, (const char **)g_bb_applets[g_bb_idx]);
+    if (!t) {
+        kprintf("[linux] BB[%d] FAIL exec\n", g_bb_idx);
+        g_bb_idx++;
+        linux_compat_run_busybox_applets();
+        return;
+    }
+    g_bb_idx++;
+    task_set_exit_all_hook(linux_compat_run_busybox_applets);
+    task_start_user();
+}
+
 static u64 align_down16(u64 x) { return x & ~0xFull; }
 
 static u64 push_str(u64 *sp, const char *s)
@@ -199,35 +242,46 @@ static void linux_compat_run_helixbox(void)
         kernel_idle_loop();
     }
     kprintf("[Helix] M5 linux-compat ready\n");
-    task_set_exit_all_hook(msh_compat_run_smoke);
+    task_set_exit_all_hook(0); /* helixbox is final; no further hook */
     task_start_user();
 }
 
 /* M11/M12: run msh — pipe pipeline + (cwd covered by helixbox HelixCwdOK). */
 void msh_compat_run_smoke(void)
 {
-    kprintf("[Helix] === M11/M12 msh smoke ===\n");
+    kprintf("[Helix] === M20 msh smoke (extended builtins) ===\n");
     const char *path = "/bin/msh";
     struct vfs_file *probe = 0;
     if (vfs_open(path, &probe) != 0) {
-        kprintf("[msh] %s missing — skip\n", path);
-        extern void kernel_idle_loop(void);
-        kernel_idle_loop();
+        kprintf("[msh] %s missing — skip to helixbox\n", path);
+        linux_compat_run_helixbox();
         return;
     }
     vfs_close(probe);
-    /* msh -c "echo HelixMshOK | cat" — exercises pipe + dup2 + exec + wait */
-    const char *av[] = { "msh", "-c", "echo HelixMshOK | cat", 0 };
-    task_init();
+    /* M20: exercise new builtins via single msh -c with ';' statement separator.
+     *   alias x=echo; x HELIX_MSH_ALIAS_OK
+     *   export A=42
+     *   test -f /hello.txt (each invocation returns rc — if open succeeds, OK)
+     *   echo HELIX_MSH_DONE | cat
+     */
+    const char *av[] = {
+        "msh", "-c",
+        "alias x=echo; x HELIX_MSH_ALIAS_OK; "
+        "export A=42; "
+        "echo HELIX_MSH_EXPORT_OK; "
+        "test -f /hello.txt; "
+        "echo HELIX_MSH_TEST_OK; "
+        "echo HELIX_MSH_DONE | cat",
+        0
+    };
     struct task *t = task_exec_path("msh", path, av);
     if (!t) {
         kprintf("[msh] FAIL exec /bin/msh\n");
-        extern void kernel_idle_loop(void);
-        kernel_idle_loop();
+        linux_compat_run_helixbox();
         return;
     }
-    kprintf("[Helix] M11/M12 msh ready\n");
-    task_set_exit_all_hook(0);
+    kprintf("[Helix] M20 msh ready\n");
+    task_set_exit_all_hook(linux_compat_run_helixbox);
     task_start_user();
 }
 
@@ -235,23 +289,20 @@ void linux_compat_run_smoke(void)
 {
     kprintf("[Helix] === M5 linux-compat smoke ===\n");
 
-    /* Try real static BusyBox multi-call echo first. */
+    /* M20: real BusyBox multi-applet chain. Try each applet; the exit-all
+     * hook advances to the next one. End of chain → linux_compat_run_helixbox. */
     const char *bb_path = "/bin/busybox";
     struct vfs_file *probe = 0;
     if (vfs_open(bb_path, &probe) == 0) {
         vfs_close(probe);
-        kprintf("[linux] trying BusyBox echo\n");
-        const char *av[] = { "echo", "HelixBusyBoxOK", 0 };
+        kprintf("[linux] trying BusyBox multi-applet chain\n");
+        g_bb_idx = 0;
+        g_bb_path = bb_path;
         task_init();
-        struct task *t = task_exec_path("echo", bb_path, av);
-        if (t) {
-            kprintf("[Helix] M5 busybox ready\n");
-            task_set_exit_all_hook(linux_compat_run_helixbox);
-            task_start_user();
-            return;
-        }
-        kprintf("[linux] BusyBox exec failed — helixbox only\n");
+        linux_compat_run_busybox_applets();
+        return;
     }
+    kprintf("[linux] BusyBox not present — helixbox only\n");
     linux_compat_run_helixbox();
 }
 

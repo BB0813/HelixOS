@@ -250,6 +250,20 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **/etc 资产 stage**：`esp_assets/passwd` (root entry) + `esp_assets/welcome.txt`
   (`HELIX_WELCOME_OK\n`) → `mkesp.sh` 写到 ESP `/etc/`
 - **helixbox subdir probe**：`cmd_smoke` 加 `ls /etc` + `cat /etc/passwd` + `cat /etc/welcome.txt` + `ls /lib` 4 个探针，验证 kernel subdir getdents64 + open
+- **BusyBox 多 applet 真实 smoke**：
+  - `kernel/proc/exec.c` `linux_compat_run_busybox_applets` 用 `g_bb_applets[][16]`
+    5-applet 表 + 模块级 `g_bb_idx`
+  - chain: `echo HelixBusyBoxOK` → `cat /etc/welcome.txt` → `echo BB2_OK` → `true` → `echo HELIX_BB_DONE`
+  - 每个 applet exit → `task_set_exit_all_hook(self)` 递归 → next applet
+  - 末尾 → `msh_compat_run_smoke` → `linux_compat_run_helixbox`
+  - **Heap bump**：`kernel/mm/heap.c` `HEAP_PAGES 1024 → 2048` (4→8 MiB) — 容纳 5 次 BusyBox ELF 重 load (each ≈ 1.1 MiB)
+- **msh 增强 (6 builtin + `;` + alias expansion)**：
+  - `user/msh.c` 加 `bi_alias` / `bi_unalias` / `bi_export` / `bi_unset` /
+    `bi_test` (含 `[` 形式 + `-f/-e/-z/-n` unary + `=/!=` binary + 整数 `-eq/-ne/-lt/-gt`) / `bi_type`
+  - 文件静态 `msh_aliases[16]` + `msh_envtab[32]` 表 (linear scan)
+  - **`msh_exec_line` 重构**：拆 `msh_exec_line` (切 `;`) + `msh_exec_pipeline` (切 `|`) + `msh_strtok_r` (strtok_r-lite，skip empty tokens)
+  - **alias expansion** in `msh_exec_pipeline`：lookup alias body → 拼接 `body + ' ' + tail_argv[1..]` → re-tokenize → 替换 argv0
+  - **bi_test bug fix**：单参 `-f/-e/-z/-n` 操作符优先于 binary `=` 检查 (避免 `test -f FILE` 误报 "need binary expr")
 
 
 ## Subsystems (target shape)
@@ -257,7 +271,7 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 | 子系统 | 起步里程碑 | 备注 |
 |--------|------------|------|
 | 串口日志 / kprintf | M0–M1 **done** | COM1；ConOut 仅 BS 前 |
-| 物理内存 / 堆 | M1 **done** | bitmap PMM + 256KiB heap |
+| 物理内存 / 堆 | M1 **done** | bitmap PMM + **8MiB heap** (M20 bump for BusyBox chain) |
 | 页表 / IDT | M1 **done** | identity 2MiB；异常→panic |
 | 中断 / 时钟 | M2 **done** | 8259 + PIT；IRQ 可返回 |
 | 内核 shell | M2 **done** | COM1；help/mem/page/int/… |
@@ -268,6 +282,7 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 | 网络 | M7–M8 **done（最小）** | e1000 + ICMP + UDP |
 | 图形 | M9 **done** | GOP fb + headless fallback |
 | 进程 | M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
+| msh 增强 | **M20 done** | 6 builtin (alias/unalias/export/unset/test/type) + `;` 分隔符 + alias expansion |
 | 信号 | **M13 done** | kill/sigaction/SIGCHLD/SIGINT |
 | TCP | **M14–M17 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；sendmsg/recvmsg + passive hostfwd（M16）；TXQ retransmit（M17） |
 | TUI | **M19 done** | 用户态 fb mmap + PS/2 键盘 → mini-terminal；helix shell `tui` 启动 |
