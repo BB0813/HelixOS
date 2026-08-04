@@ -191,6 +191,35 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **单任务场景**：`task_count_alive` short-circuit 后整个抢占逻辑零成本
 - **验收**：helixbox `HelixPreemptOK`（fork 心跳子进程写 20 dots，主 task yield 30 次，期间 2~3 次抢占让 child 推进）
 
+### 路线 D — 收尾修复补全
+
+#### D1 smoke-net 闭环
+
+- **Makefile harness**：启动 `tcp_echo_server.py` 后轮询 8080 端口直到 bind（替代 racey `sleep 8`）；
+  server stderr → `tcp_echo_server.log` 方便排错
+- **Greps 升 hard-fail**：`HelixTcpUserOK` / `HelixTcpPassiveOK` 从 soft-warn 升 `exit 1`，
+  之前缺失仍返回 0 是 baseline 永远"假装通过"的根因
+- **TCP max-retries log 节流**：kernel `static u64 s_last_retransmit_log + timer_ticks()`，
+  每 30s 最多 log 一次；serial.log 不再被刷屏淹没让 grep 可信
+- **验收**：`make smoke-net` EXIT=0 + 串口含所有 4 个 TCP/Net marker（真从 guest→host echo 收回复）
+
+#### D2 mkdisk.py FAT32 nested dir
+
+- **Bug**：`build_fat32_volume` root 路径对 `kind=="dir"` 分配 fresh `new_root` cluster 写
+  dirent，但原始 `root_cl` 永远是全 0；OVMF 找不到 `EFI/BOOT/BOOTX64.EFI`
+- **Fix**：`materialize_dir` 加 `is_root` flag（root 不写 `.`/`..`，FAT spec 禁止）；
+  56 行 root children loop 替换为单行 `materialize_dir(tree, 0, root_cl, is_root=True)`
+- **验证**：mtools `mdir -/ -i ... ::EFI/BOOT` 列出 `BOOTX64.EFI`；FAT16 smoke 不回归
+
+#### D3 msh 行规程增强
+
+- **ps2 0xE0 prefix**：之前 bit 7 set 被 `sc & 0x80` 滤掉，0xE0 直接被丢；现在接 0xE0 设
+  `g_e0_pending` flag，等下一个 byte 翻译成 ESC [ A/B/C/D（xterm 箭头键标准序列）
+- **msh_readline 重写**：cursor 模型 + 16 history ring + Ctrl+A/E/W/U/C；ESC 状态机
+  解析箭头键；ANSI `\033[C` 推进光标（serial log 不支持但不影响 grep）
+- **不引入新 syscall**：sys_read 路径不变（`g_cons_ops.read` 已 wired 到 `cons_read`）；
+  PS/2 ring buffer 直接消费 ESC 序列
+
 ### M21 FAT32 完善
 
 - **`fat_free_chain(c)`**：从 cluster `c` 沿 FAT chain 释放（entries → 0），EOF 停止

@@ -404,3 +404,60 @@ Goal：PS/2 控制器第二通道（IRQ12）启用 + 鼠标 3-byte packet 解析
 （pre-existing M21 issue，非 M22/M23 回归）。
 
 ---
+
+## 路线 D — 收尾修复补全 `[x]`
+
+路线 A→B→C 完成后进入 "已知缺陷修复 + 验证闭环 + 用户体验提升" 阶段。
+
+### D1 — smoke-net 闭环 `[x]`
+
+Goal：把 `make smoke-net` 从"知道失败"变成"知道通过"，让 HelixTcpUserOK / HelixTcpPassiveOK 真
+正作为验收 marker（不再 soft-warn）。
+
+- [x] `Makefile` smoke-net 目标：启动 `tcp_echo_server.py` 后**轮询 8080 端口**直到 bind
+  （替代 racey `sleep 8`），server stderr 重定向到 `tcp_echo_server.log` 方便排错
+- [x] `Makefile`：`HelixTcpUserOK` / `HelixTcpPassiveOK` 从 soft-warn（`echo ... WARN`）
+  升为 hard-fail（`exit 1` + 打印 serial.log）
+- [x] `kernel/net/tcp.c`：`[tcp] SYN retransmit: max retries reached` log 节流到每 30s 一次
+  （`static u64 s_last_retransmit_log + timer_ticks()`），serial.log 不再被刷屏淹没
+  让 grep 可信
+
+**验收**：`make smoke-net` EXIT=0 + serial.log 含 `HelixNetOK` + `HelixTcpOK` +
+`HelixTcpUserOK` + `HelixTcpPassiveOK`（真从 guest→host echo 收到回复）。
+
+### D2 — `build_fat32_volume` nested dir 修复 `[x]`
+
+Goal：64 MiB FAT32 镜像能正确生成 `EFI/BOOT/BOOTX64.EFI` 嵌套结构，OVMF 能找到 bootloader
+路径（M21 自标"已知限制"）。
+
+- [x] `scripts/mkdisk.py`：`materialize_dir` 加 `is_root=False` flag；root 路径不加 `.`/`..`
+  entries（FAT spec 禁止 root 有 dot entries）
+- [x] `scripts/mkdisk.py`：整段 root children loop（line 304-359，56 行）替换为单行
+  `materialize_dir(tree, 0, root_cl, is_root=True)`；递归子目录调用加 `is_root=False`
+- [x] 之前 bug：`kind=="dir"` 分支分配 fresh `new_root` cluster 写 dirent，但原始
+  `root_cl` 永远是全 0，dir dirent 跑到 orphan cluster；OVMF 找不到 `EFI/BOOT/...`
+
+**验收**：mtools `mdir -/ -i test_fat32_raw.img ::EFI/BOOT` 列出 `BOOTX64.EFI`；
+`make smoke-fs` EXIT=0（FAT16 路径不回归）。
+
+### D3 — msh 行规程增强 `[x]`
+
+Goal：msh 跟 Linux bash 一样有 cursor 行编辑 + history + Ctrl+A/E/W/U，箭头键可工作。
+
+- [x] `kernel/drv/ps2.c`：`ps2_handler` 加 `0xE0` prefix 状态机（`g_e0_pending` flag）
+  — 之前 bit 7 set 被 `sc & 0x80` 滤掉，0xE0 直接被丢；现在接 0xE0 后等下一个 byte，
+  箭头键 make（0x48/0x50/0x4B/0x4D）→ 输出 ESC [ A/B/C/D（xterm 标准序列）
+- [x] `user/msh.c`：`msh_readline` 重写为 cursor 模型
+  - `cur` 独立于 `len`，任意位置可插入/删除
+  - ESC 状态机（ST_IDLE → ST_ESC → ST_CSI）解析箭头键
+  - Ctrl+A 行首 / Ctrl+E 行尾 / Ctrl+W 删词到空白 / Ctrl+U 清行 / Ctrl+C 输出 ^C
+  - 16 条 history ring（`msh_history[16][256]`）；第一次 Up 时把当前行存到 `msh_draft`，
+    再 Up 翻老历史，Down 回到 draft
+  - `msh_redraw`：`\r` + 整行 + 尾部空格擦除 + `(len-cur)` 个 `\b`
+- [x] sys_read 不变路径（`g_cons_ops.read` 已 wired 到 `cons_read` → ps2 轮询）；无新 syscall
+
+**验收**：`make` EXIT=0（kernel + user 编译干净）；`make smoke-linux` EXIT=0（HelixLinuxOK +
+HelixPreemptOK + cwd + sig 不回归）；`make smoke-fs` EXIT=0（FAT 不回归）。
+手工验证：msh 输入 `echo hello<Up>` 自动补全；Ctrl+A 跳行首；Ctrl+W 删 word。
+
+---

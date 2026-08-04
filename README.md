@@ -23,7 +23,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M19, M21–M23 已完成**（2026-08-05；路线 C 收尾）
+**M0–M19, M21–M23 + 路线 D 已完成**（2026-08-05；路线 A→B→C→D 全部完成）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -47,6 +47,9 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M21 | **FAT32 完善**（stale-cleanup helper + 64MiB FAT32 大盘验证） | `selftest OK (FAT32): HelixFATWriteOK` |
 | M22 | **抢占式调度**（IRQ0 tick → syscall 返回路径 task_yield，阈值 8） | **`HelixPreemptOK`** |
 | M23 | **PS/2 鼠标**（aux port + IRQ12 + 3-byte packet → sys_mouse_read(548)） | **`HelixMouseOK`** |
+| **D1** | **smoke-net 闭环**（端口等待 + HelixTcpUserOK/PassiveOK hard-fail + max-retries 节流） | **`HelixTcpUserOK` + `HelixTcpPassiveOK`** |
+| **D2** | **FAT32 nested dir 修复**（`is_root` flag + root 走 `materialize_dir`） | EFI/BOOT/BOOTX64.EFI 可达（mtools mdir 验证） |
+| **D3** | **msh 行规程增强**（ps2 0xE0 + ESC 箭头键 + cursor/history/Ctrl+A-E-W-U） | `make` EXIT=0；`smoke-linux` EXIT=0 |
 
 ## 快速开始
 
@@ -124,7 +127,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M23**（已完成，路线 C 收尾 M21+M22+M23）。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M23** + **路线 D**（已完成，路线 A→B→C→D 全部完成）。
 
 ## 许可
 
