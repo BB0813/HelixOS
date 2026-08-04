@@ -525,8 +525,12 @@ void tcp_retransmit(void) {
         if (ts->state == TCP_STATE_SYN_SENT) {
             if (now - ts->last_send_tick < TCP_RETRANS_TIMEOUT_TICKS) continue;
             if (ts->retries >= TCP_RETRANS_MAX_RETRIES) {
-                /* Stop retransmitting after max retries but keep socket alive — application
-                 * may still be polling. */
+                /* D1: rate-limit max-retries log to 1 per 30s so serial.log stays
+                 * greppable. Application can still poll the socket; tcpstat shows state. */
+                static u64 s_last_retransmit_log = 0;
+                u64 now_log = timer_ticks();
+                if (now_log - s_last_retransmit_log < 3000) continue;  /* 30s @100Hz */
+                s_last_retransmit_log = now_log;
                 kprintf("[tcp] SYN retransmit: max retries reached (socket %d still waiting)\n", i);
                 continue;
             }

@@ -220,16 +220,39 @@ clean:
 	$(RM_RF) $(BUILD) $(OUT) $(ESP) $(GEN) $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
 
 smoke-net: esp
-	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd
-	@python $(ROOT)/scripts/tcp_echo_server.py & TCP_PID=$$!; HEADLESS=1 TIMEOUT_SECS=120 bash $(ROOT)/scripts/run-qemu.sh & QEMU_PID=$$!; sleep 8; python $(ROOT)/scripts/tcp_host_client.py 2>/dev/null & TCP_CLIENT_PID=$$!; wait $$QEMU_PID 2>/dev/null || true; kill $$TCP_PID 2>/dev/null || true; kill $$TCP_CLIENT_PID 2>/dev/null || true
+	@rm -f $(ROOT)/serial.log $(ROOT)/ovmf_vars.fd $(ROOT)/tcp_echo_server.log
+	@python $(ROOT)/scripts/tcp_echo_server.py > $(ROOT)/tcp_echo_server.log 2>&1 & TCP_PID=$$!; \
+	 for i in $$(seq 1 50); do \
+	   python -c "import socket,sys; s=socket.socket(); s.connect(('127.0.0.1',8080)); s.close(); sys.exit(0)" 2>/dev/null && break; \
+	   sleep 0.1; \
+	 done; \
+	 if ! python -c "import socket; socket.create_connection(('127.0.0.1',8080),timeout=1)" 2>/dev/null; then \
+	   echo "SMOKE-NET FAIL: tcp_echo_server did not bind 8080"; cat $(ROOT)/tcp_echo_server.log; kill $$TCP_PID 2>/dev/null; exit 1; \
+	 fi; \
+	 HEADLESS=1 TIMEOUT_SECS=120 bash $(ROOT)/scripts/run-qemu.sh & QEMU_PID=$$!; \
+	 sleep 5; \
+	 python $(ROOT)/scripts/tcp_host_client.py 2>/dev/null & TCP_CLIENT_PID=$$!; \
+	 wait $$QEMU_PID 2>/dev/null || true; \
+	 kill $$TCP_PID 2>/dev/null || true; \
+	 kill $$TCP_CLIENT_PID 2>/dev/null || true
+	@grep -a -F -q "M7 net ready" $(ROOT)/serial.log || { echo SMOKE-NET FAIL M7; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "10.0.2.15" $(ROOT)/serial.log || { echo SMOKE-NET FAIL IP; exit 1; }
+	@grep -a -F -q "HelixNetOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixNetOK; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "ICMP echo reply" $(ROOT)/serial.log || { echo SMOKE-NET FAIL ICMP; exit 1; }
+	@grep -a -F -q "user_udp_ok" $(ROOT)/serial.log || { echo SMOKE-NET FAIL user_udp_ok; exit 1; }
+	@grep -a -F -q "HelixTcpOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpOK; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "HelixTcpUserOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpUserOK; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "HelixTcpPassiveOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpPassiveOK; cat $(ROOT)/serial.log; exit 1; }
+	@echo SMOKE-NET OK
+	@grep -a -E 'net|arp|icmp|udp|tcp|HelixNet|host_udp' $(ROOT)/serial.log | head -40
 	@grep -a -F -q "M7 net ready" $(ROOT)/serial.log || { echo SMOKE-NET FAIL M7; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "10.0.2.15" $(ROOT)/serial.log || { echo SMOKE-NET FAIL IP; exit 1; }
 	@grep -a -F -q "HelixNetOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixNetOK; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "ICMP echo reply" $(ROOT)/serial.log || { echo SMOKE-NET FAIL ICMP; exit 1; }
 	@grep -a -F -q "user_udp_ok" $(ROOT)/serial.log || { echo SMOKE-NET FAIL user_udp_ok; cat $(ROOT)/serial.log; exit 1; }
 	@grep -a -F -q "HelixTcpOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpOK; cat $(ROOT)/serial.log; exit 1; }
-	@if grep -a -F -q "HelixTcpUserOK" $(ROOT)/serial.log 2>/dev/null; then echo "SMOKE-NET OK (TCP user)"; else echo "SMOKE-NET WARN: HelixTcpUserOK missing"; fi
-	@if grep -a -F -q "HelixTcpPassiveOK" $(ROOT)/serial.log 2>/dev/null; then echo "SMOKE-NET OK (TCP passive)"; else echo "SMOKE-NET WARN: HelixTcpPassiveOK missing"; fi
+	@grep -a -F -q "HelixTcpUserOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpUserOK; cat $(ROOT)/serial.log; exit 1; }
+	@grep -a -F -q "HelixTcpPassiveOK" $(ROOT)/serial.log || { echo SMOKE-NET FAIL HelixTcpPassiveOK; cat $(ROOT)/serial.log; exit 1; }
 	@echo SMOKE-NET OK
 	@grep -a -E 'net|arp|icmp|udp|tcp|HelixNet|host_udp' $(ROOT)/serial.log | head -40
 
