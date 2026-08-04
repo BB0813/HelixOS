@@ -276,8 +276,8 @@ def build_fat32_volume(size_bytes: int, files: list[tuple[str, bytes]]) -> bytes
 
     root_cl = alloc_chain(bpc)  # FAT32 root is a regular cluster chain
 
-    def materialize_dir(node: dict, parent_cl: int, self_cl: int) -> None:
-        entries = [
+    def materialize_dir(node: dict, parent_cl: int, self_cl: int, is_root: bool = False) -> None:
+        entries = [] if is_root else [
             dir_entry(encode_83("."), 0x10, self_cl, 0),
             dir_entry(encode_83(".."), 0x10, parent_cl, 0),
         ]
@@ -299,64 +299,14 @@ def build_fat32_volume(size_bytes: int, files: list[tuple[str, bytes]]) -> bytes
         write_chain(self_cl, blob.ljust(bpc, b"\x00"))
         for name, kind, cl, size, sub in children:
             if kind == "dir":
-                materialize_dir(sub, self_cl, cl)
+                materialize_dir(sub, self_cl, cl, is_root=False)
 
-    for name, (kind, payload) in sorted(tree.items(), key=lambda x: x[0].upper()):
-        if kind == "dir":
-            cl = alloc_chain(bpc)
-            # add dirent to root
-            root_blob = (
-                dir_entry(encode_83(name), 0x10, cl, 0)
-                + dir_entry(encode_83("."), 0x10, root_cl, 0)
-                + dir_entry(encode_83(".."), 0x10, 0, 0)
-            )
-            # extend root chain by 1 cluster
-            cur = root_cl
-            while True:
-                val = fat[cur * 4] | (fat[cur * 4 + 1] << 8) | (fat[cur * 4 + 2] << 16) | (fat[cur * 4 + 3] << 24)
-                if val >= 0x0FFFFFF8:
-                    break
-                cur = val
-            new_root = alloc_chain(bpc)
-            fat_set(cur, new_root)
-            write_chain(new_root, root_blob.ljust(bpc, b"\x00"))
-            materialize_dir(payload, root_cl, cl)
-        else:
-            cl = alloc_chain(len(payload) if payload else 1)
-            write_chain(cl, payload)
-            # append file dirent to root chain
-            cur = root_cl
-            blob = dir_entry(encode_83(name), 0x20, cl, len(payload))
-            # find first root cluster with free space; or extend
-            first_free_off = None
-            cur2 = root_cl
-            while True:
-                start = (cur2 - 2) * bpc
-                chunk = bytes(data[start : start + bpc])
-                # find free slot
-                for i in range(0, bpc, 32):
-                    if chunk[i] == 0 or chunk[i] == 0xE5:
-                        if first_free_off is None:
-                            first_free_off = (cur2, i)
-                            break
-                val = fat[cur2 * 4] | (fat[cur2 * 4 + 1] << 8) | (fat[cur2 * 4 + 2] << 16) | (fat[cur2 * 4 + 3] << 24)
-                if val >= 0x0FFFFFF8:
-                    break
-                cur2 = val
-            if first_free_off is None:
-                # extend root chain
-                cur = root_cl
-                while True:
-                    val = fat[cur * 4] | (fat[cur * 4 + 1] << 8) | (fat[cur * 4 + 2] << 16) | (fat[cur * 4 + 3] << 24)
-                    if val >= 0x0FFFFFF8:
-                        break
-                    cur = val
-                first_free_off = (alloc_chain(bpc), 0)
-                fat_set(cur, first_free_off[0])
-                write_chain(first_free_off[0], b"\x00" * bpc)
-            rc, ro = first_free_off
-            start = (rc - 2) * bpc + ro
-            data[start : start + 32] = blob
+    # D2: root also goes through materialize_dir. Pass is_root=True so root
+    # omits `.`/`..` entries (FAT spec forbids them on root). All children —
+    # files AND subdirs — land in `root_cl`'s single cluster. Single-cluster
+    # overflow still raises (matches prior behavior); nested dirs recurse
+    # and extend their own chain.
+    materialize_dir(tree, 0, root_cl, is_root=True)
 
     bpb = bytearray(sector)
     bpb[0:3] = b"\xEB\x58\x90"
