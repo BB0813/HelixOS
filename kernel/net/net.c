@@ -319,15 +319,20 @@ static void handle_ip(const u8 *pkt, u32 len)
     u32 dst = ntohs_u32(ip->dst);
     if (dst != g_ip && dst != 0xFFFFFFFFu)
         return;
-
+    kprintf("[ip] rx: %u.%u.%u.%u -> %u.%u.%u.%u proto=%u len=%u\n",
+            (src >> 24) & 0xFF, (src >> 16) & 0xFF,
+            (src >> 8) & 0xFF, src & 0xFF,
+            (dst >> 24) & 0xFF, (dst >> 16) & 0xFF,
+            (dst >> 8) & 0xFF, dst & 0xFF,
+            (unsigned)ip->proto, total);
     if (ip->proto == IP_PROTO_ICMP)
         handle_icmp(src, pkt + ihl, total - ihl);
     else if (ip->proto == IP_PROTO_TCP && total > ihl + 20) {
-        /* M14 TCP: demux to TCP stack */
+        /* M14 TCP: demux to TCP stack. Pass network-order addresses. */
         extern void tcp_input(u32 src_be, u32 dst_be, const u8 *tcp_pkt, u32 tcp_len);
         const u8 *tcp_pkt = pkt + ihl;
         u32 tcp_len = total - ihl;
-        tcp_input(src, dst, tcp_pkt, tcp_len);
+        tcp_input(ip->src, ip->dst, tcp_pkt, tcp_len);
     }
     else if (ip->proto == IP_PROTO_UDP && total > ihl + 8) {
         /* Minimal UDP demux: [src_port_be(2), dst_port_be(2), len(2), csum(2)] */

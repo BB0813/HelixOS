@@ -75,6 +75,7 @@ struct helix_tcp_sock {
 
     /* Retransmission timer */
     u64  last_send_tick;      /* last time data was sent (for retransmit timer) */
+    u32  retries;             /* SYN/FIN retransmit retry counter */
 
     /* Parent socket (for accepted connections) */
     struct helix_tcp_sock *parent;

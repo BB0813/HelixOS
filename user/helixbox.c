@@ -238,14 +238,14 @@ static void cmd_tcp_smoke(void)
     for (int i = 0; i < 16; i++) sa[i] = 0;
     sa[0] = 2; sa[1] = 0;
     sa[2] = 0x1F; sa[3] = 0x90; /* 8080 BE = 0x1F90 */
-    sa[4] = 10; sa[5] = 2; sa[6] = 0; sa[7] = 2;
+    sa[4] = 10; sa[5] = 0; sa[6] = 2; sa[7] = 2; /* 10.0.2.2 gateway */
 
     /* Connect with retry — ARP may need a few yield cycles */
     long r = -1;
-    for (int i = 0; i < 100 && r < 0; i++) {
+    for (int i = 0; i < 20 && r < 0; i++) {
         r = usys(SYS_connect, sfd, (long)sa, 16);
         if (r < 0)
-            for (int j = 0; j < 5000; j++) usys(SYS_yield, 0, 0, 0);
+            for (int j = 0; j < 1000; j++) usys(SYS_yield, 0, 0, 0);
     }
     if (r < 0) {
         xwrite("tcp_smoke: connect fail\n");
@@ -253,22 +253,22 @@ static void cmd_tcp_smoke(void)
         return;
     }
 
-    /* Poll for ESTABLISHED (SYN/ACK exchange) — ~10s wall-clock */
+    /* Poll for ESTABLISHED (SYN/ACK exchange) — extended wait for SLiRP NAT latency */
     for (int i = 0; i < 100; i++) {
         const char *payload = "HELIX_TCP_PING";
         long plen = 0; while (payload[plen]) plen++;
         r = usys6(SYS_sendto, sfd, (long)payload, plen, 0, (long)sa, 16);
         if (r >= 0) break; /* success — data sent */
-        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 200; j++) usys(SYS_yield, 0, 0, 0);
     }
 
     if (r < 0) {
-        xwrite("tcp_smoke: connect timeout\n");
+        xwrite("HelixTcpUserFAIL: no ESTABLISHED\n");
         usys(SYS_close, sfd, 0, 0);
         return;
     }
 
-    /* Recv ECHO reply — ~10s wall-clock */
+    /* Recv ECHO reply — bounded wait */
     char rbuf[128];
     int ok = 0;
     for (int i = 0; i < 100; i++) {
@@ -280,12 +280,12 @@ static void cmd_tcp_smoke(void)
                 if (rbuf[j] != expect[j]) { ok = 0; break; }
             break;
         }
-        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 200; j++) usys(SYS_yield, 0, 0, 0);
     }
     if (ok)
         xwrite("HelixTcpUserOK\n");
     else
-        xwrite("HelixTcpUserFAIL\n");
+        xwrite("HelixTcpUserFAIL: no echo\n");
     usys(SYS_close, sfd, 0, 0);
 }
 
@@ -312,12 +312,12 @@ static void cmd_tcp_passive_smoke(void)
     /* Non-blocking: fcntl(fd, F_SETFL, O_NONBLOCK) */
     usys(72, lfd, 4, 2048);
 
-    /* Poll for incoming connection — ~30s wall-clock to match host client retry window */
+    /* Poll for incoming connection — short bounded wait */
     long cfd = -1;
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 200; i++) {
         cfd = usys(SYS_accept, lfd, 0, 0);
         if (cfd >= 0) break;
-        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 200; j++) usys(SYS_yield, 0, 0, 0);
     }
 
     if (cfd < 0) {
@@ -331,13 +331,13 @@ static void cmd_tcp_passive_smoke(void)
     /* Set client socket non-blocking */
     usys(72, cfd, 4, 2048);
 
-    /* Poll for incoming data — ~10s wall-clock (inner delay loop) */
+    /* Poll for incoming data — bounded wait */
     char rbuf[128];
     int nr = 0;
     for (int i = 0; i < 100; i++) {
-        nr = (int)usys(SYS_read, cfd, (long)rbuf, sizeof(rbuf));
+        nr = (int)usys6(SYS_recvfrom, cfd, (long)rbuf, 128, 0, 0, 0);
         if (nr > 0) break;
-        for (int j = 0; j < 50000; j++) usys(SYS_yield, 0, 0, 0);
+        for (int j = 0; j < 200; j++) usys(SYS_yield, 0, 0, 0);
     }
 
     if (nr <= 0) {
@@ -350,8 +350,8 @@ static void cmd_tcp_passive_smoke(void)
     /* Echo back with ECHO: prefix */
     const char *prefix = "ECHO:";
     long plen = 0; while (prefix[plen]) plen++;
-    usys(SYS_write, cfd, (long)prefix, plen);
-    usys(SYS_write, cfd, (long)rbuf, nr);
+    usys6(SYS_sendto, cfd, (long)prefix, plen, 0, 0, 0);
+    usys6(SYS_sendto, cfd, (long)rbuf, nr, 0, 0, 0);
 
     /* Give host client time to read, then close */
     for (int i = 0; i < 50; i++) usys(SYS_yield, 0, 0, 0);

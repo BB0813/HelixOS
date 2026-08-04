@@ -168,8 +168,15 @@ static i64 sys_exit(u64 code)
     return 0;
 }
 
+extern void net_poll(void);
+
 static i64 sys_yield(void)
 {
+    /* Cooperative yield: poll the NIC so the kernel can process incoming
+     * packets while the task is giving up the CPU. Without this, a task
+     * that spins on yield would never let the kernel process incoming
+     * packets (e.g. TCP SYN+ACK). */
+    net_poll();
     task_yield();
     return 0;
 }
