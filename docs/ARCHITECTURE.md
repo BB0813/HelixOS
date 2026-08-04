@@ -74,7 +74,7 @@ UEFI firmware (OVMF)
 |----|------|
 | 地址空间 | **每任务独立 CR3/PML4**（M10）：kernel 映射共享，用户页独立物理复制 |
 | 进入用户 | `iretq`；`syscall` / `sysretq` |
-| 调度 | **协作** yield/exit；syscall 内 `task_yield` **不会**真正切换（仅在 syscall 返回路径切换） |
+| 调度 | **协作** yield/exit + **M22 IRQ0 每 tick 抢占点**（阈值 8 ticks ≈80ms，syscall 返回路径检查 + `task_yield()`；不调 `net_poll` 避免双倍开销） |
 | 阻塞 I/O | 必须 **EAGAIN** + 用户态 `yield` 轮询（pipe / wait4 / console stdin） |
 | 输出 | `write` → console 行缓冲 → `[user] ` + 串口 |
 | 进程 | `fork`(57) 独立 PML4 + 页表递归复制；`execve`(59) 替换用户空间 + argv |

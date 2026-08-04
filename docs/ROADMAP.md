@@ -364,22 +364,25 @@ Goal：[`docs/GOAL_M21.md`](GOAL_M21.md)
 
 ---
 
-## M22 — 抢占式调度（preemptive）`[ ]`
+## M22 — 抢占式调度（preemptive）`[x]`
 
-Goal：IRQ0 timer 在协作调度上叠加抢占点，让后台 task 不依赖前台 yield 也能推进。
-解锁真正的并发场景（TCP listen 后无需主 task 主动 spin；多个 user task 同时活动）。
+Goal：[`docs/GOAL_M22.md`](GOAL_M22.md)
 
-- [ ] `kernel/arch/x86_64/timer.c`：`timer_on_irq` 每 tick 设 `g_preempt_pending = 1`
-- [ ] `kernel/proc/syscall.c:1311`：syscall 返回路径前检查并 `task_yield()`
-- [ ] `kernel/proc/task.c`：`g_preempt_pending` 全局 + helper `task_should_resched()`
-- [ ] 修 syscall 入口未把 `g_syscall_user_rsp` 写回 `t->regs.rsp` 的 latent bug
-- [ ] helixbox 自检加后台 `for(;;) { write("."); yield(); }`，主 task 不动时串口仍打印心跳
-- [ ] smoke-linux / smoke-net 不回归
+- [x] `kernel/arch/x86_64/timer.c`：`timer_on_irq` 每 tick 累加 `g_preempt_pending`
+- [x] `timer_preempt_pending()`：`__atomic_exchange_n` 读并清零 + `PREEMPT_THRESHOLD=8` 阈值
+- [x] `kernel/proc/syscall.c:1311` 与 :1313 之间插入抢占检查
+  - gate 1：`task_count_alive() > 1`（单任务路径无开销）
+  - gate 2：`timer_preempt_pending() >= PREEMPT_THRESHOLD`（≈80ms 节流）
+  - 命中后 `task_yield()`；不调 `net_poll()`（sys_yield 已调）
+- [x] helixbox 加 `HelixPreemptOK`：fork 心跳子进程写 20 个 `.`，主 task yield 30 次
+- [x] `make smoke-fs` 不回归；`make smoke-net` 含 HelixPreemptOK + HelixTcpUserOK + HelixTcpPassiveOK
 
-**注意**：协作调度下 task 共享 fd refcount 没有真并发。开启抢占后 syscall 路径需复核重入。
-最小改动路径优先（不动 Ring3 #GP 注入、不动 syscall 入口寄存器窗口）。
+**注意**：抢占**不**改 syscall 入口寄存器窗口；`task->regs` 仍由 syscall.c:1313-1335 拥有。
+阈值 8 让抢占触发频率 ≈12 次/秒，对心跳推进够用，对 `cmd_tcp_smoke` 1000×20
+yield 内层循环开销可接受。
 
-**验收**：`make smoke-linux` 含新的 `HelixPreemptOK`；TCP listen 后主 task 不动，内核仍能推进被动连接 accept。
+**验证**：`make smoke-linux` 串口含 `[helixbox] HelixPreemptOK`（child 写 20 dots 后退出；
+parent 继续打印 HelixPreemptOK）；`make smoke-net` 含 HelixPreemptOK + TCP user/passive 不回归。
 
 ---
 

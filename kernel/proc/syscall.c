@@ -17,6 +17,7 @@
 #include "helix/ps2.h"
 #include "helix/pipe.h"
 #include "helix/signal.h"
+#include "helix/timer.h"
 #include "helix/tcp.h"
 
 u64 g_syscall_kstack;
@@ -1309,6 +1310,18 @@ u64 syscall_entry_c(struct syscall_frame *f)
 
     /* Deliver pending signals before returning to userspace. */
     signal_deliver_current();
+
+    /* M22: tick-driven preempt point. If enough ticks have accumulated since
+     * last syscall (~80ms) and there is more than one live task, just try
+     * to switch. task_yield() returns early if no other task is READY.
+     * We deliberately do NOT call net_poll() here — sys_yield() already
+     * calls it, and other syscalls that need it call it directly; running
+     * it on every syscall return would multiply per-syscall cost by the
+     * full TCP/ICMP scan. task_current() below re-reads g_current. */
+    if (task_count_alive() > 1 &&
+        timer_preempt_pending() >= timer_preempt_threshold()) {
+        task_yield();
+    }
 
     t = task_current();
     if (t && t->state == TASK_RUNNING) {

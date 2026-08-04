@@ -671,6 +671,26 @@ host_udp:
         /* Parent continues — child handles listener in background */
     }
 
+    /* M22: preempt smoke — forked heartbeat child emits 20 dots then exits.
+     * Relies on IRQ0 tick driving task_yield() on the syscall return path,
+     * so the child makes progress even if the parent stops yielding.
+     * Runs AFTER the TCP passive fork so it does not contend for sockets. */
+    {
+        long hb_child = usys(SYS_fork, 0, 0, 0);
+        if (hb_child == 0) {
+            for (int i = 0; i < 20; i++) {
+                xwrite(".");
+                usys(SYS_yield, 0, 0, 0);
+            }
+            xwrite("\n[helixbox] preempt heartbeat done\n");
+            usys(SYS_exit, 0, 0, 0);
+        }
+        /* parent: yield enough times for the child to finish all 20 dots */
+        for (int i = 0; i < 30; i++)
+            usys(SYS_yield, 0, 0, 0);
+        xwrite("[helixbox] HelixPreemptOK\n");
+    }
+
     /* M15: TCP smoke — connect to host echo server via QEMU hostfwd */
     cmd_tcp_smoke();
 

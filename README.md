@@ -23,7 +23,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M19, M21 已完成**（2026-08-04）
+**M0–M19, M21, M22 已完成**（2026-08-04）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -45,6 +45,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M18 | fb mmap user-space + PS/2 keyboard | `HelixFBInfoOK` / `HelixFBMmapOK` / `HelixKbOK` |
 | M19 | **TUI shell**（fb + PS/2 键盘 → `bin/tui`） | `task_exec_path(tui) -> 0x...` |
 | M21 | **FAT32 完善**（stale-cleanup helper + 64MiB FAT32 大盘验证） | `selftest OK (FAT32): HelixFATWriteOK` |
+| M22 | **抢占式调度**（IRQ0 tick → syscall 返回路径 task_yield，阈值 8） | **`HelixPreemptOK`** |
 
 ## 快速开始
 
@@ -87,6 +88,7 @@ PipeOK  WaitOK
 HelixMshOK
 HelixCwdOK
 HelixSigOK
+HelixPreemptOK
 HelixTcpOK
 HelixTcpUserOK
 HelixTcpPassiveOK
@@ -120,7 +122,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M21**（已完成）；下一候选 **M22 抢占式调度** / **M23 PS/2 鼠标**。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M22**（已完成）；下一候选 **M23 PS/2 鼠标**。
 
 ## 许可
 
