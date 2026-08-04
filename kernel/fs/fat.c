@@ -698,6 +698,76 @@ static int root_update_dirent(const char name83[11], u32 start_clus, u32 size)
     return -1;
 }
 
+/* M21: free the cluster chain starting at `c`. FAT entries → 0.
+ * Used by stale-cleanup before re-creating a known file across boots. */
+static void fat_free_chain(u32 c)
+{
+    while (c >= 2 && !fat_is_eof(c)) {
+        u32 next = fat_get(c);
+        fat_put(c, 0);
+        c = next;
+    }
+}
+
+/* M21: find a root entry by 8.3 name and mark it deleted (0xE5) in place,
+ * freeing its data cluster chain. Works for both FAT16 fixed root and
+ * FAT32 root cluster chain. Returns 0 if found+freed, -1 otherwise. */
+static int root_unlink_and_free(const char name83[11])
+{
+    u8 sec[512];
+    u32 sectors_or_clus;
+
+    if (g_fat.fat_type == 32) {
+        sectors_or_clus = g_fat.sec_per_clus;
+        u32 clus = g_fat.root_clus;
+        while (!fat_is_eof(clus) && clus >= 2) {
+            for (u8 s = 0; s < sectors_or_clus; s++) {
+                u32 lba = clus_to_lba(clus) + s;
+                if (read_sector(lba, sec) != 0)
+                    return -1;
+                for (u32 i = 0; i < 512; i += 32) {
+                    u8 *e = &sec[i];
+                    if (e[0] == 0 || e[0] == 0xE5 || e[11] == 0x0F)
+                        continue;
+                    if (memcmp(e, name83, 11) != 0)
+                        continue;
+                    u32 c = e[26] | (e[27] << 8);
+                    c |= (u32)(e[20] | (e[21] << 8)) << 16;
+                    e[0] = 0xE5;
+                    if (write_sector(lba, sec) != 0)
+                        return -1;
+                    if (c >= 2)
+                        fat_free_chain(c);
+                    return 0;
+                }
+            }
+            clus = fat_get(clus);
+        }
+        return -1;
+    }
+
+    /* FAT16: fixed root region in `root_sectors` sectors starting at root_lba */
+    for (u32 s = 0; s < g_fat.root_sectors; s++) {
+        if (read_sector(g_fat.root_lba + s, sec) != 0)
+            return -1;
+        for (u32 i = 0; i < 512; i += 32) {
+            u8 *e = &sec[i];
+            if (e[0] == 0 || e[0] == 0xE5 || e[11] == 0x0F)
+                continue;
+            if (memcmp(e, name83, 11) != 0)
+                continue;
+            u32 c = e[26] | (e[27] << 8);
+            e[0] = 0xE5;
+            if (write_sector(g_fat.root_lba + s, sec) != 0)
+                return -1;
+            if (c >= 2)
+                fat_free_chain(c);
+            return 0;
+        }
+    }
+    return -1;
+}
+
 /* Create empty file or dir in root only (path like "FOO.TXT" or "BAR"). */
 static int fat_create_root(const char *path, int is_dir, u32 *out_clus)
 {
@@ -1002,31 +1072,12 @@ int fat_selftest_write(void)
     while (payload[plen])
         plen++;
 
-    /* Delete stale entry if present so create is clean across boots on same img. */
+    /* Delete stale entry if present so create is clean across boots on same img.
+     * M21: works for both FAT16 and FAT32 (was FAT16-only, caused flaky re-runs). */
     {
         char w[11];
         encode_83_upper("HELIXW.TXT", w);
-        u32 cl0, sz0;
-        u8 attr0;
-        u32 root_key = (g_fat.fat_type == 32) ? g_fat.root_clus : 0;
-        if (find_in_dir(root_key, w, &cl0, &sz0, &attr0) == 0) {
-            /* mark deleted in root */
-            u8 sec[512];
-            if (g_fat.fat_type != 32) {
-                for (u32 s = 0; s < g_fat.root_sectors; s++) {
-                    if (read_sector(g_fat.root_lba + s, sec) != 0)
-                        break;
-                    for (u32 i = 0; i < 512; i += 32) {
-                        if (memcmp(&sec[i], w, 11) == 0) {
-                            sec[i] = 0xE5;
-                            write_sector(g_fat.root_lba + s, sec);
-                            s = g_fat.root_sectors;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        root_unlink_and_free(w);
     }
 
     struct vfs_file *f = 0;

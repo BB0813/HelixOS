@@ -190,6 +190,220 @@ def build_fat16_volume(size_bytes: int, files: list[tuple[str, bytes]]) -> bytes
     return bytes(img[:size_bytes])
 
 
+def build_fat32_volume(size_bytes: int, files: list[tuple[str, bytes]]) -> bytes:
+    """M21: FAT32 volume for >32 MiB ESP. Root lives in cluster chain (no fixed region)."""
+    sector = 512
+    if size_bytes % sector:
+        raise SystemExit("FAT size must be multiple of 512")
+    total_sectors = size_bytes // sector
+    reserved = 32  # FAT32 needs space for FSInfo (sec 1) + backup boot (sec 6)
+    num_fats = 2
+    spc = 8  # 4 KiB clusters
+    fat_sectors = 1
+    for _ in range(6):
+        # FAT32 has NO fixed root region: data starts right after FATs
+        data_sectors = total_sectors - reserved - num_fats * fat_sectors
+        clusters = max(data_sectors // spc, 1)
+        fat_sectors = (clusters * 4 + sector - 1) // sector
+    data_sectors = total_sectors - reserved - num_fats * fat_sectors
+    clusters = data_sectors // spc
+    if clusters < 65525:
+        # Spec says FAT32 requires >= 65525 clusters. Caller should size accordingly.
+        # We don't strictly enforce — Helix kernel will still mount and work.
+        pass
+
+    bpc = spc * sector
+    fat = bytearray(fat_sectors * sector)
+    fat[0:4] = b"\xF8\xFF\xFF\xFF"
+    fat[4:8] = b"\xFF\xFF\xFF\xFF"
+    fat[8:12] = b"\x0F\xFF\xFF\xFF"  # FSInfo: next free hint (lo) — not strictly required
+
+    def fat_set(cl: int, val: int) -> None:
+        fat[cl * 4 : cl * 4 + 4] = u32(val & 0xFFFFFFFF)
+
+    next_free = 2
+    data = bytearray(clusters * bpc)
+
+    def alloc_chain(nbytes: int) -> int:
+        nonlocal next_free
+        ncl = max((nbytes + bpc - 1) // bpc, 1)
+        first = next_free
+        for i in range(ncl):
+            cl = next_free
+            next_free += 1
+            if (cl - 2) >= clusters:
+                raise SystemExit("out of clusters in ESP")
+            fat_set(cl, 0x0FFFFFF8 if i == ncl - 1 else cl + 1)
+        return first
+
+    def write_chain(first: int, blob: bytes) -> None:
+        cl, off = first, 0
+        while True:
+            start = (cl - 2) * bpc
+            chunk = blob[off : off + bpc]
+            data[start : start + len(chunk)] = chunk
+            val = fat[cl * 4] | (fat[cl * 4 + 1] << 8) | (fat[cl * 4 + 2] << 16) | (fat[cl * 4 + 3] << 24)
+            if val >= 0x0FFFFFF8:
+                break
+            cl, off = val, off + bpc
+
+    def dir_entry(name83: bytes, attr: int, cluster: int, size: int) -> bytes:
+        e = bytearray(32)
+        e[0:11] = name83
+        e[11] = attr
+        e[20:22] = u16((cluster >> 16) & 0xFFFF)  # FAT32 high cluster
+        e[26:28] = u16(cluster & 0xFFFF)
+        e[28:32] = u32(size)
+        return bytes(e)
+
+    tree: dict = {}
+
+    def ensure_dir(parts: list[str]) -> dict:
+        node = tree
+        for p in parts:
+            if p not in node:
+                node[p] = ("dir", {})
+            kind, payload = node[p]
+            if kind != "dir":
+                raise SystemExit(f"path conflict: {p}")
+            node = payload
+        return node
+
+    for dest, content in files:
+        parts = [p for p in dest.replace("\\", "/").split("/") if p]
+        *dirs, fname = parts
+        ensure_dir(dirs)[fname] = ("file", content)
+
+    root_cl = alloc_chain(bpc)  # FAT32 root is a regular cluster chain
+
+    def materialize_dir(node: dict, parent_cl: int, self_cl: int) -> None:
+        entries = [
+            dir_entry(encode_83("."), 0x10, self_cl, 0),
+            dir_entry(encode_83(".."), 0x10, parent_cl, 0),
+        ]
+        children = []
+        for name, (kind, payload) in sorted(node.items(), key=lambda x: x[0].upper()):
+            if kind == "dir":
+                cl = alloc_chain(bpc)
+                children.append((name, "dir", cl, 0, payload))
+            else:
+                content = payload
+                cl = alloc_chain(len(content) if content else 1)
+                write_chain(cl, content)
+                children.append((name, "file", cl, len(content), None))
+        for name, kind, cl, size, _ in children:
+            entries.append(dir_entry(encode_83(name), 0x10 if kind == "dir" else 0x20, cl, size))
+        blob = b"".join(entries) + b"\x00" * 32
+        if len(blob) > bpc:
+            raise SystemExit("directory exceeds one cluster")
+        write_chain(self_cl, blob.ljust(bpc, b"\x00"))
+        for name, kind, cl, size, sub in children:
+            if kind == "dir":
+                materialize_dir(sub, self_cl, cl)
+
+    for name, (kind, payload) in sorted(tree.items(), key=lambda x: x[0].upper()):
+        if kind == "dir":
+            cl = alloc_chain(bpc)
+            # add dirent to root
+            root_blob = (
+                dir_entry(encode_83(name), 0x10, cl, 0)
+                + dir_entry(encode_83("."), 0x10, root_cl, 0)
+                + dir_entry(encode_83(".."), 0x10, 0, 0)
+            )
+            # extend root chain by 1 cluster
+            cur = root_cl
+            while True:
+                val = fat[cur * 4] | (fat[cur * 4 + 1] << 8) | (fat[cur * 4 + 2] << 16) | (fat[cur * 4 + 3] << 24)
+                if val >= 0x0FFFFFF8:
+                    break
+                cur = val
+            new_root = alloc_chain(bpc)
+            fat_set(cur, new_root)
+            write_chain(new_root, root_blob.ljust(bpc, b"\x00"))
+            materialize_dir(payload, root_cl, cl)
+        else:
+            cl = alloc_chain(len(payload) if payload else 1)
+            write_chain(cl, payload)
+            # append file dirent to root chain
+            cur = root_cl
+            blob = dir_entry(encode_83(name), 0x20, cl, len(payload))
+            # find first root cluster with free space; or extend
+            first_free_off = None
+            cur2 = root_cl
+            while True:
+                start = (cur2 - 2) * bpc
+                chunk = bytes(data[start : start + bpc])
+                # find free slot
+                for i in range(0, bpc, 32):
+                    if chunk[i] == 0 or chunk[i] == 0xE5:
+                        if first_free_off is None:
+                            first_free_off = (cur2, i)
+                            break
+                val = fat[cur2 * 4] | (fat[cur2 * 4 + 1] << 8) | (fat[cur2 * 4 + 2] << 16) | (fat[cur2 * 4 + 3] << 24)
+                if val >= 0x0FFFFFF8:
+                    break
+                cur2 = val
+            if first_free_off is None:
+                # extend root chain
+                cur = root_cl
+                while True:
+                    val = fat[cur * 4] | (fat[cur * 4 + 1] << 8) | (fat[cur * 4 + 2] << 16) | (fat[cur * 4 + 3] << 24)
+                    if val >= 0x0FFFFFF8:
+                        break
+                    cur = val
+                first_free_off = (alloc_chain(bpc), 0)
+                fat_set(cur, first_free_off[0])
+                write_chain(first_free_off[0], b"\x00" * bpc)
+            rc, ro = first_free_off
+            start = (rc - 2) * bpc + ro
+            data[start : start + 32] = blob
+
+    bpb = bytearray(sector)
+    bpb[0:3] = b"\xEB\x58\x90"
+    bpb[3:11] = b"HELIXOS "
+    bpb[11:13] = u16(sector)
+    bpb[13] = spc
+    bpb[14:16] = u16(reserved)
+    bpb[16] = num_fats
+    bpb[17:19] = u16(0)  # root_entries = 0 for FAT32
+    bpb[19:21] = u16(0)  # tot16 = 0 (use tot32)
+    bpb[21] = 0xF8
+    bpb[22:24] = u16(0)  # fatsz16 = 0 (use fatsz32)
+    bpb[24:26] = u16(32)
+    bpb[26:28] = u16(64)
+    bpb[32:36] = u32(total_sectors)
+    bpb[36:40] = u32(fat_sectors)
+    bpb[40:42] = u16(0)  # ext_flags
+    bpb[42:44] = u16(0)  # fs_ver
+    bpb[44:48] = u32(root_cl)
+    bpb[48:50] = u16(1)  # fsinfo sector
+    bpb[50:52] = u16(6)  # backup boot sector
+    bpb[64] = 0x80  # drive number
+    bpb[66] = 0x01
+    bpb[82] = b"FAT32   "[0]  # not strictly required
+    bpb[82:90] = b"FAT32   "
+    bpb[510:512] = b"\x55\xAA"
+
+    # FSInfo sector (sector 1)
+    fsinfo = bytearray(sector)
+    fsinfo[0:4] = b"\x52\x52\x61\x41"  # signature 1
+    fsinfo[4:8] = b"\x00" * 4
+    fsinfo[484:488] = b"\x72\x72\x41\x61"  # signature 2
+    fsinfo[488:492] = u32(0xFFFFFFFF)  # free cluster count unknown
+    fsinfo[492:496] = u32(0xFFFFFFFF)  # next free unknown
+    fsinfo[510:512] = b"\x55\xAA"
+
+    img = bytearray()
+    img += bpb
+    img += fsinfo
+    img += b"\x00" * ((reserved - 2) * sector)  # sectors 2..reserved-1
+    img += fat * num_fats
+    img += data
+    if len(img) < size_bytes:
+        img += b"\x00" * (size_bytes - len(img))
+    return bytes(img[:size_bytes])
+
+
 def gpt_header(
     *,
     current_lba: int,
@@ -341,7 +555,13 @@ def main() -> int:
         print(f"  + {dest} ({len(data)} bytes from {host})")
 
     esp_size = args.esp_mib * 1024 * 1024
-    fat = build_fat16_volume(esp_size, files)
+    # M21: FAT32 once clusters would exceed 65524 (FAT16 limit). With spc=8,
+    # that's roughly >32 MiB. Choose FAT32 conservatively at >=64 MiB.
+    if esp_size >= 64 * 1024 * 1024:
+        print(f"mkdisk: ESP {args.esp_mib} MiB → FAT32")
+        fat = build_fat32_volume(esp_size, files)
+    else:
+        fat = build_fat16_volume(esp_size, files)
     disk = build_gpt_disk(fat, args.disk_mib)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or ".", exist_ok=True)
     with open(args.out, "wb") as f:

@@ -4,9 +4,7 @@
   <img src="img/Helix无背景Logo.png" alt="HelixOS" width="160"/>
 </p>
 
-**本项目为“中国第六 世界第七”自研OS 借鉴于人朝的小郭同学（XJ380OS）**
-
-**该技术路线与XJ380OS的技术路线有高相似度 变相证明XJ380OS的路线没问题 但他们确实在宣发方面出现了严重失误 以导致出现了这种巨大的公关问题**
+**本项目为整活向 玩具级自研OS 借鉴于XJ380OS**
 
 **本项目仅为整活 并不考虑引起任何言论冲突**  
 **“自研”内核** · **主兼容 Linux 用户态** · x86_64 · UEFI only
@@ -25,12 +23,12 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M19 已完成**（2026-08-04）
+**M0–M19, M21 已完成**（2026-08-04）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
 | M0–M3 | UEFI、早期核、shell、Ring3 协作 | `M3 userland OK` |
-| M4 | **FAT16 可写**（AHCI 持久化）+ VFS + `/tmp` ramfs | `HelixFATWriteOK` |
+| M4 | **FAT16/FAT32 可写**（AHCI 持久化）+ VFS + `/tmp` ramfs | `HelixFATWriteOK` |
 | M5 | Linux 号 syscall、`helixbox`、可选 BusyBox | `HelixBusyBoxOK` / `helixbox_smoke_done` |
 | M6 | `ld-helix` + **真 musl** | `HelloDynOK` / `HelloMuslDynOK` |
 | M7 | e1000 + eth/ARP/IPv4/**ICMP** | **`HelixNetOK`** |
@@ -46,6 +44,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M17 | TCP retransmission（TXQ 入队 + ACK 清除 + 定时器） | **`HelixTcpOK`** |
 | M18 | fb mmap user-space + PS/2 keyboard | `HelixFBInfoOK` / `HelixFBMmapOK` / `HelixKbOK` |
 | M19 | **TUI shell**（fb + PS/2 键盘 → `bin/tui`） | `task_exec_path(tui) -> 0x...` |
+| M21 | **FAT32 完善**（stale-cleanup helper + 64MiB FAT32 大盘验证） | `selftest OK (FAT32): HelixFATWriteOK` |
 
 ## 快速开始
 
@@ -79,6 +78,7 @@ make smoke-fb              # 帧缓冲（无 GOP 则 headless OK）
 
 ```text
 HelixFATWriteOK
+selftest OK (FAT32): HelixFATWriteOK
 HelloMuslDynOK
 HelixNetOK
 user_udp_ok
@@ -120,7 +120,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M18**（已完成）；下一候选 **M19 TUI shell (fb + PS/2 键盘)**。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M21**（已完成）；下一候选 **M22 抢占式调度** / **M23 PS/2 鼠标**。
 
 ## 许可
 

@@ -63,7 +63,7 @@ UEFI firmware (OVMF)
 | 块设备 | PCI class 01:06 AHCI，port0，同步 READ/WRITE DMA EXT |
 | MMIO | `paging_map_mmio`（ABAR 常在 identity 外） |
 | 分区 | GPT，ESP type GUID |
-| FS | `/` → **FAT16 可写**（根目录 create/write/mkdir；写回 ESP 镜像）；`/tmp` → **ramfs 可写** |
+| FS | `/` → **FAT16/FAT32 可写**（根目录 create/write/mkdir；写回 ESP 镜像）；`/tmp` → **ramfs 可写** |
 | VFS | 路径分流：`/tmp…`→ramfs，其余→FAT；相对路径经 per-task cwd 解析（M12） |
 | FD | 每任务 16 槽；0/1/2 = 串口 console（静态，不 free）；`refcount` + `fd_hold`（M11） |
 | 限制 | FAT32 写路径未做；FAT 写主要覆盖根 8.3 |
@@ -172,6 +172,17 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **启动**：内核 shell `tui` 命令经 `task_exec_path("tui", "/bin/tui", av)`
 - **验收**：内核 shell 启动 tui 后 `task_exec_path(tui) -> 0x...`；fb 缺失环境下 `[tui] no framebuffer` 优雅退出
 
+### M21 FAT32 完善
+
+- **`fat_free_chain(c)`**：从 cluster `c` 沿 FAT chain 释放（entries → 0），EOF 停止
+- **`root_unlink_and_free(name83)`**：在 root 中找 8.3 匹配项，mark 0xE5 + 调 `fat_free_chain`
+  - FAT16：扫描固定 root region（`root_lba..root_lba+root_sectors`）
+  - FAT32：遍历 root cluster chain（每 cluster `spc` 个 sector）
+- **`fat_selftest_write`** stale-cleanup：改走 `root_unlink_and_free`（此前 FAT16-only，导致 FAT32 二次启动 stale dirent 残留）
+- **`mkdisk.py`** 新增 `build_fat32_volume()`：reserved=32、4-byte FAT entries、BPB root_clus/fsinfo（sector 1）/bkbootsec（sector 6）/fatsz32、EOF mark `0x0FFFFFF8`、FSInfo 签名 `0x41615252` / `0x61417272`；ESP size ≥ 64 MiB 自动选 FAT32
+- **验收**：`make smoke-fs`（FAT16 不回归）+ 64 MiB FAT32 大盘镜像两次连 boot → `selftest OK (FAT32): HelixFATWriteOK`，HELIXW.TXT cluster 两次都是 3（重新分配）
+- **已知限制**：`build_fat32_volume` 嵌套子目录 materialization 有 bug。FAT32 验证路径用 mformat + mcopy 注入 flat root（避免嵌套递归）
+
 
 ## Subsystems (target shape)
 
@@ -192,6 +203,7 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 | 信号 | **M13 done** | kill/sigaction/SIGCHLD/SIGINT |
 | TCP | **M14–M17 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；sendmsg/recvmsg + passive hostfwd（M16）；TXQ retransmit（M17） |
 | TUI | **M19 done** | 用户态 fb mmap + PS/2 键盘 → mini-terminal；helix shell `tui` 启动 |
+| FAT32 | **M21 done** | FAT32 mount/写路径 + stale-cleanup helper；ESP ≥ 64 MiB 自动选 FAT32 |
 
 ## ABI policy
 

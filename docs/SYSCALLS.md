@@ -11,9 +11,9 @@
 - **诚实 `uname`**：`sysname=Helix`（**不是** Linux）。
 - **用户输出**：console `write` → 串口，行缓冲前缀 `[user] `。
 - **FS**：
-  - `/` = **FAT16 可写**（根目录 create/write/mkdir；AHCI 写回 ESP 镜像）
+  - `/` = **FAT16/FAT32 可写**（根目录 create/write/mkdir；AHCI 写回 ESP 镜像）
   - `/tmp` = **ramfs 可写**
-  - FAT32 写路径未做
+  - FAT32: 挂载、写路径、stale-cleanup（M21 done）
 
 ## Table (x86_64)
 
@@ -104,4 +104,5 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-04 | **修复**：tcp_init 不再 wipe 已 used 槽位（保留 pending child，否则被 active socket 复用导致 adopt 失败） |
 | 2026-08-04 | M18 fb user-space：`sys_mmap(fd=-4)` 映射 GOP framebuffer；`sys_fb_info`(546) 返回分辨率；`sys_readkey`(547) PS/2 键盘非阻塞读；helixbox `HelixFBInfoOK`/`HelixFBMmapOK`/`HelixKbOK` |
 | 2026-08-04 | M19 TUI shell：用户态 mini-terminal（`bin/tui`）使用 fb mmap + PS/2 键盘；8x16 VGA 字体；内置 help/clear/echo/ls/cat/ps/tcpstat/time/reboot/exit；内核 shell `tui` 命令启动 |
+| 2026-08-04 | M21 FAT32 完善：`fat_free_chain` + `root_unlink_and_free` helper（FAT16 固定根 + FAT32 root cluster chain）；`fat_selftest_write` 改走 helper 修 stale-cleanup；`mkdisk.py` 新增 `build_fat32_volume`（ESP ≥ 64 MiB 自动选 FAT32）；mformat + mcopy 验证 64 MiB 大盘 FAT32 镜像两次连 boot → **`HelixFATWriteOK`**（cluster 3 重新分配） |
 

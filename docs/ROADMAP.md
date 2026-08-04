@@ -343,3 +343,59 @@ Goal：基于 M18 提供的 fb mmap + PS/2 键盘，编写用户态 TUI shell。
 完整 fb 渲染验证需带 QemuVideoDxe 的 OVMF 环境。
 
 ---
+
+## M21 — FAT32 完善 `[x]`
+
+Goal：[`docs/GOAL_M21.md`](GOAL_M21.md)
+
+- [x] `fat_free_chain()` 释放 cluster chain（FAT entries → 0）
+- [x] `root_unlink_and_free()` 同时支持 FAT16 固定 root + FAT32 root cluster chain
+- [x] `fat_selftest_write` 改走新 helper，FAT32 二次启动 stale-cleanup 修复
+- [x] `mkdisk.py` 新增 `build_fat32_volume()`；ESP ≥ 64 MiB 自动选 FAT32
+- [x] FAT32 真实大盘镜像挂载（mformat + mcopy + mkdisk.py GPT 包装）→ `selftest OK (FAT32): HelixFATWriteOK`
+- [x] FAT32 二次启动 cleanup 验证：HELIXW.TXT cluster=3 size=16，新分配，旧 chain 已 free
+
+**验收**：
+- FAT16：`make smoke-fs` 不回归（含 `mounted FAT16` + `HelixFATWriteOK`）
+- FAT32：64 MiB ESP 镜像两次连 boot，selftest 两次 OK；HELIXW.TXT cluster 两次都是 3（重新分配证明 cleanup 走通）
+
+**已知限制**：`build_fat32_volume` 的 nested dir materialization 有 bug（顶层文件 OK，子目录递归会丢 dirent）。
+本里程碑**只**用 flat root + mtools 注入子目录；自动化 FAT32 大盘脚本留后续。
+
+---
+
+## M22 — 抢占式调度（preemptive）`[ ]`
+
+Goal：IRQ0 timer 在协作调度上叠加抢占点，让后台 task 不依赖前台 yield 也能推进。
+解锁真正的并发场景（TCP listen 后无需主 task 主动 spin；多个 user task 同时活动）。
+
+- [ ] `kernel/arch/x86_64/timer.c`：`timer_on_irq` 每 tick 设 `g_preempt_pending = 1`
+- [ ] `kernel/proc/syscall.c:1311`：syscall 返回路径前检查并 `task_yield()`
+- [ ] `kernel/proc/task.c`：`g_preempt_pending` 全局 + helper `task_should_resched()`
+- [ ] 修 syscall 入口未把 `g_syscall_user_rsp` 写回 `t->regs.rsp` 的 latent bug
+- [ ] helixbox 自检加后台 `for(;;) { write("."); yield(); }`，主 task 不动时串口仍打印心跳
+- [ ] smoke-linux / smoke-net 不回归
+
+**注意**：协作调度下 task 共享 fd refcount 没有真并发。开启抢占后 syscall 路径需复核重入。
+最小改动路径优先（不动 Ring3 #GP 注入、不动 syscall 入口寄存器窗口）。
+
+**验收**：`make smoke-linux` 含新的 `HelixPreemptOK`；TCP listen 后主 task 不动，内核仍能推进被动连接 accept。
+
+---
+
+## M23 — PS/2 鼠标支持 `[ ]`
+
+Goal：PS/2 控制器第二通道（IRQ12）启用 + 鼠标 3-byte packet 解析；用户态可读鼠标事件。
+
+- [ ] `kernel/drv/ps2.c` 抽 `ps2_write_cmd()` / `ps2_write_aux()` / `ps2_read_data()` 公共 helper
+- [ ] `ps2_init()` 启用 aux port：`0xA8` + `0x60 | 0x02` + `0xD4 0xF4` + `0xD4 0xF3 0x64 0xF3 0x50`
+- [ ] `ps2_mouse_handler()` 累积 3-byte packet → `{dx, dy, buttons}` struct → ring buffer
+- [ ] `kernel/arch/x86_64/irq.c`：IRQ12 → `ps2_mouse_handler()`，`pic_unmask(12)`
+- [ ] `sys_mouse_read`(548)：从 ring buffer 读事件到用户 struct
+- [ ] helixbox 自检：`MouseMoveOK`（人为移动鼠标 QEMU 后台）+ `MouseBtnOK`（点击）
+- [ ] 新 `smoke-mouse` 目标
+
+**验收**：`make esp` + QEMU 启动串口含 `[ps2] mouse ready (IRQ12)`；
+helixbox 输出 `HelixMouseOK`。
+
+---
