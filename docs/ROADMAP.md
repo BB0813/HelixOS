@@ -302,7 +302,7 @@ Goal: [`docs/GOAL_M17.md`](GOAL_M17.md)
 
 ---
 
-## M18 — fb user-space interface + PS/2 keyboard `[~]`
+## M18 — fb user-space interface + PS/2 keyboard `[x]`
 
 Goal: [`docs/GOAL_M18.md`](GOAL_M18.md)
 
@@ -317,5 +317,21 @@ Goal: [`docs/GOAL_M18.md`](GOAL_M18.md)
 
 **验证**：`make smoke` 串口含 `HelixFBInfoOK` + `HelixFBMmapOK` + `HelixKbOK`；
 `make smoke-fb` QEMU 窗口可见蓝色矩形（mmap 写入）；启动日志含 `[ps2] keyboard ready`。
+
+---
+
+## M19 — TUI shell (fb + PS/2 keyboard) `[ ]`
+
+Goal：基于 M18 提供的 fb mmap + PS/2 键盘，编写用户态 TUI shell。
+运行模式：在 framebuffer 上绘制文本 UI + 输入栏，PS/2 键盘输入命令。
+
+- [ ] 用户态 mini-terminal：`term_init()` / `term_putc()` / `term_getline()`，写入 GOP mmap 区域
+- [ ] PS/2 键盘扫描码 → ASCII 翻译（含 shift/caps/backspace/enter）
+- [ ] `term_clear()` / `term_set_color()` / `term_goto(row, col)`
+- [ ] 内置命令：`help` / `clear` / `echo` / `ls /` / `cat FILE` / `ps` / `tcpstat` / `time` / `reboot`
+- [ ] helixbox 启动后自动 fork 出 tui 进程（替换 / 配合 helix shell）
+- [ ] 串口 + fb 双输出（fb 渲染，串口备份 log）
+
+**验证**：`make smoke-fb` QEMU 窗口可见 tui shell；输入命令后输出可见；串口有对应日志。
 
 ---

@@ -24,7 +24,7 @@
 | 2 | open | **done** | O_CREAT/TRUNC/APPEND（FAT 根 + ramfs） |
 | 3 | close | **done** | |
 | 5 | fstat | **done** | 最小 `struct stat` |
-| 9 | mmap | **partial** | **匿名**（`MAP_ANONYMOUS` 或 `fd==-1`）；支持 `addr=0` 与 FIXED/hint；**非** file-backed |
+| 9 | mmap | **partial** | **匿名**（`MAP_ANONYMOUS` 或 `fd==-1`）；支持 `addr=0` 与 FIXED/hint；**非** file-backed；M18：**`fd==-4`** → map GOP framebuffer 物理页 |
 | 10 | mprotect | **partial** | 成功 stub（不改页属性） |
 | 11 | munmap | **partial** | 成功 stub（暂泄漏页） |
 | 12 | brk | **done** | 按页扩展 |
@@ -62,6 +62,8 @@
 | 257 | openat | **done** | 重定向至 open |
 | 262 | newfstatat | **done** | 重定向至 fstatat |
 | 318 | getrandom | **done** | 软实现（ticks） |
+| 546 | sys_fb_info (custom) | **done** | M18：返回 `{width, height, pitch, bpp, size}` |
+| 547 | sys_readkey (custom) | **done** | M18：非阻塞 PS/2 键盘读取 |
 
 Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 
@@ -95,4 +97,8 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-01 | M15：sendto/recvfrom TCP 路由（is_socket==2 → tcp_send_data/tcp_recv_data）；helixbox TCP echo → **`HelixTcpUserOK`** |
 | 2026-08-01 | M16：sendmsg(46)/recvmsg(47) 完整实现（iovec coalesce/scatter + TCP/UDP 路由） |
 | 2026-08-01 | 文档对齐 M0–M15（README/ARCHITECTURE/BUILD/GOAL_*）；下一候选 M16 TCP passive + sendmsg |
+| 2026-08-04 | M16 TCP passive：pending child（无 listener 早期 SYN 入队）+ listen() adopt；helixbox 双进程（fork 被动 + 主 active） → **`HelixTcpPassiveOK`** |
+| 2026-08-04 | M17 TCP 重传：TXQ 入队 + ACK 清除 + `tcp_retransmit()` 每 net_poll 调用；SYN_SENT/ESTABLISHED/FIN_WAIT_1 定时重发 |
+| 2026-08-04 | **修复**：tcp_init 不再 wipe 已 used 槽位（保留 pending child，否则被 active socket 复用导致 adopt 失败） |
+| 2026-08-04 | M18 fb user-space：`sys_mmap(fd=-4)` 映射 GOP framebuffer；`sys_fb_info`(546) 返回分辨率；`sys_readkey`(547) PS/2 键盘非阻塞读；helixbox `HelixFBInfoOK`/`HelixFBMmapOK`/`HelixKbOK` |
 

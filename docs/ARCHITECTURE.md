@@ -154,6 +154,13 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 
 **协作调度下**：信号仅置位，不抢占；处理在 syscall 返回路径。SIGKILL 不可屏蔽，直接 terminate。
 
+### M18 fb user-space interface + PS/2 keyboard
+
+- **fb mmap**：`sys_mmap`(9) `fd==-4` 把 GOP 帧缓冲物理页 map 到 user VA（4 KiB 对齐页）；每页 remap 同一物理页
+- **sys_fb_info**(546)：返回 `{width, height, pitch, bpp, size}` 到用户 struct（≥ 16 字节 buffer）
+- **PS/2 键盘**：`kernel/drv/ps2.c` IRQ1 → scancode 队列（set-1 ASCII 翻译）+ `sys_readkey`(547) 非阻塞读
+- **验收**：helixbox `HelixFBInfoOK` + `HelixFBMmapOK` + `HelixKbOK`（写入 fb 矩形 + 读键）
+
 
 ## Subsystems (target shape)
 

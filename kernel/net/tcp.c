@@ -18,7 +18,7 @@
 #include "helix/heap.h"
 
 /* M17 retransmission constants */
-#define TCP_RETRANS_TIMEOUT_TICKS  100  /* 1 second at 100Hz */
+#define TCP_RETRANS_TIMEOUT_TICKS  50   /* 0.5 second at 100Hz — fast SYN retransmit */
 #define TCP_RETRANS_MAX_RETRIES    3
 
 #define TCP_SOCK_MAX       8
@@ -63,26 +63,36 @@ static u32 htons32(u32 x) {
 }
 static u32 ntohs32(u32 x) { return htons32(x); }
 
-static u16 checksum16(const void *data, u32 len) {
+static u16 checksum16_raw(const void *data, u32 len) {
     const u8 *p = (const u8 *)data;
     u32 sum = 0;
     while (len > 1) { sum += ((u32)p[0] << 8) | p[1]; p += 2; len -= 2; }
     if (len) sum += (u32)p[0] << 8;
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
-    return (u16)~sum;
+    return (u16)sum;
 }
 
-/* TCP pseudo-header for checksum (RFC 793) */
+/* TCP pseudo-header for checksum (RFC 793)
+ * src_be/dst_be are stored in "wire byte order as u32 on little-endian host":
+ * i.e. the LSB is the first byte on the wire (matches how sys_connect parses
+ * sockaddr bytes). So byte 0 of the pseudo-header = LSB of the u32. */
 static u16 tcp_checksum(const void *tcp_segment, u32 tcp_len,
                         u32 src_be, u32 dst_be) {
-    struct { u32 src, dst; u8 zero; u8 proto; u16 tcp_len; } __attribute__((packed)) ph;
-    ph.src = src_be;
-    ph.dst = dst_be;
-    ph.zero = 0;
-    ph.proto = 6; /* TCP */
-    ph.tcp_len = htons16((u16)tcp_len);
-    u32 sum = checksum16(&ph, sizeof(ph));
-    sum += (u32)~checksum16(tcp_segment, tcp_len) & 0xFFFF; /* ones-complement */
+    u8 ph[12];
+    ph[0] = (u8)src_be;
+    ph[1] = (u8)(src_be >> 8);
+    ph[2] = (u8)(src_be >> 16);
+    ph[3] = (u8)(src_be >> 24);
+    ph[4] = (u8)dst_be;
+    ph[5] = (u8)(dst_be >> 8);
+    ph[6] = (u8)(dst_be >> 16);
+    ph[7] = (u8)(dst_be >> 24);
+    ph[8] = 0;
+    ph[9] = 6; /* TCP */
+    ph[10] = (u8)(tcp_len >> 8);
+    ph[11] = (u8)tcp_len;
+    u32 sum = checksum16_raw(ph, sizeof(ph));
+    sum += checksum16_raw(tcp_segment, tcp_len);
     sum = (sum & 0xFFFF) + (sum >> 16);
     while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
     return (u16)~sum;
@@ -128,6 +138,9 @@ int tcp_bind(struct helix_tcp_sock *ts, u32 addr_be, u16 port_be) {
         port_be = htons16(p);
     }
     if (tcp_find_bound(port_be)) return -98; /* EADDRINUSE */
+    /* Default to local IP if user passed INADDR_ANY (0) — pseudo-header needs
+     * the same src that goes into the IP header. */
+    if (addr_be == 0) addr_be = net_local_ip_be();
     ts->laddr_be = addr_be;
     ts->lport_be = port_be;
     ts->bound = 1;
@@ -153,6 +166,7 @@ static int tcp_send_segment(struct helix_tcp_sock *ts, u8 flags,
     th->window = htons16(4096);
     th->urgent = 0;
     if (dlen) memcpy(buf + sizeof(*th), data, dlen);
+    /* raddr_be and laddr_be are both in network order; tcp_checksum reads bytes as-is */
     th->checksum = htons16(tcp_checksum(buf, tcp_len, ts->laddr_be, ts->raddr_be));
 
     u32 dst_host = ((ts->raddr_be & 0xFF) << 24) | ((ts->raddr_be >> 8 & 0xFF) << 16) |
@@ -169,6 +183,8 @@ int tcp_connect(struct helix_tcp_sock *ts, u32 raddr_be, u16 rport_be) {
     ts->rcv_nxt = 0;
     ts->state = TCP_STATE_SYN_SENT;
     ts->snd_nxt = ts->iss;
+    ts->retries = 0;
+    ts->last_send_tick = timer_ticks();
     kprintf("[tcp] connect: sending SYN seq=%u to port %u\n", ts->iss, (unsigned)ntohs16(rport_be));
     return tcp_send_segment(ts, TCP_FLAG_SYN, ts->snd_nxt, 0, 0, 0);
 }
@@ -206,10 +222,11 @@ int tcp_listen(struct helix_tcp_sock *ts, u16 port_be) {
                 child->rx_tail = (u16)((child->rx_tail + 1) % 8);
                 child->rx_count++;
                 child->rcv_nxt += (u32)pc->data_len;
-                kprintf("[tcp] adopted: delivered %d pending bytes\n", pc->data_len);
+                kprintf("[tcp] adopted: delivered %d pending bytes (rx_count=%d)\n", pc->data_len, child->rx_count);
             }
             ts->backlog[ts->backlog_len++] = child;
-            kprintf("[tcp] adopted pending child from port %u into backlog\n", (unsigned)ntohs16(child->rport_be));
+            kprintf("[tcp] adopted pending child from port %u into backlog (state=%d, rx_count=%d)\n",
+                    (unsigned)ntohs16(child->rport_be), child->state, child->rx_count);
         }
     }
     /* compact pending array */
@@ -275,7 +292,6 @@ int tcp_recv_data(struct helix_tcp_sock *ts, void *buf, u32 buflen) {
     ts->rx_head = (u16)((ts->rx_head + 1) % 8);
     ts->rx_count--;
     ts->rcv_nxt += n;
-    kprintf("[tcp] recv %u bytes (rcv_nxt now %u)\n", (unsigned)n, ts->rcv_nxt);
     return (int)n;
 }
 
@@ -401,6 +417,23 @@ void tcp_input(u32 src_be, u32 dst_be_ignored, const u8 *tcp_pkt, u32 tcp_len) {
         ts->rcv_nxt = seq; /* peer may send data starting at seq */
         ts->snd_una = ack;
         ts->snd_nxt = ack;
+        /* If this is a pending child (no listener yet) and the ACK carries data,
+         * stash the payload in the pending_child slot so listen() can deliver it.
+         * Also mark has_ack so listen() will adopt it as ESTABLISHED. */
+        if (!ts->parent) {
+            for (int i = 0; i < g_tcp_pending_count; i++) {
+                struct tcp_pending_child *pc = &g_tcp_pending[i];
+                if (pc->sock == ts) {
+                    pc->has_ack = 1;
+                    pc->ack_seq = seq;
+                    if (plen > 0 && pc->data_len == 0 && plen <= (u32)sizeof(pc->data)) {
+                        memcpy(pc->data, payload, plen);
+                        pc->data_len = (int)plen;
+                    }
+                    break;
+                }
+            }
+        }
         struct helix_tcp_sock *parent = ts->parent;
         if (parent && parent->backlog_len < TCP_CONN_BACKLOG) {
             parent->backlog[parent->backlog_len++] = ts;
@@ -481,12 +514,29 @@ void tcp_input(u32 src_be, u32 dst_be_ignored, const u8 *tcp_pkt, u32 tcp_len) {
     }
 }
 
-/* ---- M17: retransmit timed-out segments ---- */
+/* ---- M17: retransmit timed-out segments (SYN, data, FIN) ---- */
 void tcp_retransmit(void) {
     u64 now = timer_ticks();
     for (int i = 0; i < TCP_SOCK_MAX; i++) {
         struct helix_tcp_sock *ts = &g_tcp_socks[i];
         if (!ts->used) continue;
+
+        /* SYN_SENT: retransmit SYN every 1s if no SYN+ACK received */
+        if (ts->state == TCP_STATE_SYN_SENT) {
+            if (now - ts->last_send_tick < TCP_RETRANS_TIMEOUT_TICKS) continue;
+            if (ts->retries >= TCP_RETRANS_MAX_RETRIES) {
+                /* Stop retransmitting after max retries but keep socket alive — application
+                 * may still be polling. */
+                kprintf("[tcp] SYN retransmit: max retries reached (socket %d still waiting)\n", i);
+                continue;
+            }
+            kprintf("[tcp] SYN retransmit: socket %d (retry %u)\n", i, (unsigned)ts->retries + 1);
+            ts->retries++;
+            ts->last_send_tick = now;
+            tcp_send_segment(ts, TCP_FLAG_SYN, ts->snd_nxt, 0, 0, 0);
+            continue;
+        }
+
         if (ts->state != TCP_STATE_ESTABLISHED && ts->state != TCP_STATE_FIN_WAIT_1)
             continue;
         if (ts->tx_count == 0) continue;
@@ -516,10 +566,16 @@ void tcp_retransmit(void) {
 /* ---- helper: add known ports for dedicated listeners ---- */
 void tcp_init(void)
 {
-    /* M17: only clear unbound sockets — preserve listeners set up during userland smoke */
+    /* M18: only clear genuinely UNUSED slots. Anything `used` (including pending
+     * children created by incoming SYNs that arrived before userland bring-up)
+     * must be preserved — otherwise tcp_init wipes the pending child slot and
+     * the next socket() reuses it for the active connection. By the time listen()
+     * runs, pc->sock points at the active socket instead of the pending child,
+     * and the adoption check `pc->sock->lport_be == ts->lport_be` fails because
+     * the active socket's lport is 41000 (ephemeral), not 8081. */
     for (int i = 0; i < TCP_SOCK_MAX; i++) {
-        if (g_tcp_socks[i].used && g_tcp_socks[i].bound)
-            continue; /* keep active listener */
+        if (g_tcp_socks[i].used)
+            continue;
         memset(&g_tcp_socks[i], 0, sizeof(g_tcp_socks[i]));
     }
     g_tcp_ephemeral = 41000;

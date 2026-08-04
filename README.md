@@ -25,7 +25,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M17 已完成**（2026-08-03）
+**M0–M18 已完成**（2026-08-04）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -44,6 +44,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M15 | TCP 用户态 echo（sendto/recvfrom TCP 路由） | **`HelixTcpUserOK`** |
 | M16 | sendmsg/recvmsg + TCP passive hostfwd echo | **`HelixTcpPassiveOK`** |
 | M17 | TCP retransmission（TXQ 入队 + ACK 清除 + 定时器） | **`HelixTcpOK`** |
+| M18 | fb mmap user-space + PS/2 keyboard | `HelixFBInfoOK` / `HelixFBMmapOK` / `HelixKbOK` |
 
 ## 快速开始
 
@@ -117,7 +118,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M16**（已完成）；下一候选 **M17 TCP 重传 / fb 用户态接口**。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M18**（已完成）；下一候选 **M19 TUI shell (fb + PS/2 键盘)**。
 
 ## 许可
 
