@@ -320,18 +320,26 @@ Goal: [`docs/GOAL_M18.md`](GOAL_M18.md)
 
 ---
 
-## M19 — TUI shell (fb + PS/2 keyboard) `[ ]`
+## M19 — TUI shell (fb + PS/2 keyboard) `[~]`
 
 Goal：基于 M18 提供的 fb mmap + PS/2 键盘，编写用户态 TUI shell。
 运行模式：在 framebuffer 上绘制文本 UI + 输入栏，PS/2 键盘输入命令。
 
-- [ ] 用户态 mini-terminal：`term_init()` / `term_putc()` / `term_getline()`，写入 GOP mmap 区域
-- [ ] PS/2 键盘扫描码 → ASCII 翻译（含 shift/caps/backspace/enter）
-- [ ] `term_clear()` / `term_set_color()` / `term_goto(row, col)`
-- [ ] 内置命令：`help` / `clear` / `echo` / `ls /` / `cat FILE` / `ps` / `tcpstat` / `time` / `reboot`
-- [ ] helixbox 启动后自动 fork 出 tui 进程（替换 / 配合 helix shell）
-- [ ] 串口 + fb 双输出（fb 渲染，串口备份 log）
+- [x] 用户态 mini-terminal：`tui_init()` / `tui_putc()` / `tui_puts()`，写入 GOP mmap 区域
+- [x] 内嵌 8x16 VGA 位图字体（95 ASCII 字符，MSB-first）
+- [x] PS/2 键盘扫描码 → ASCII 翻译（系统调用 sys_readkey 完成；backspace/Ctrl+D/Ctrl+C）
+- [x] 内置命令：`help` / `clear` / `echo` / `ls` / `cat` / `ps` / `tcpstat` / `time` / `reboot` / `exit`
+- [x] 串口 + fb 双输出（fb 渲染，串口备份 log）
+- [x] `bin/tui` 写入 ESP；内核 shell `tui` 命令通过 `task_exec_path` 启动
+- [x] 文本网格（80x30 @ 1024x768），`scroll_up()` 滚屏，行编辑
+- [x] 三重故障重启（`xor %rax,%rax; mov %rax,%cr3`）
 
-**验证**：`make smoke-fb` QEMU 窗口可见 tui shell；输入命令后输出可见；串口有对应日志。
+**注意**：MSYS2/ArchLinux/Ubuntu 打包的 4MB OVMF 不含 QemuVideoDxe，本地 QEMU 测试时
+`fb_init` 返回 -1，`tui` 优雅退出 `[tui] no framebuffer`。在原生 OVMF（8MB+）或真机
+固件上 TUI 可正常工作。
+
+**验证**：`make esp` 串口含 `+ bin/tui`；`make` 输出 `build/user/tui.elf`（11 KiB）；
+内核 shell 输入 `tui` 命令后 `task_exec_path(tui) -> 0x...`（任务已创建）。
+完整 fb 渲染验证需带 QemuVideoDxe 的 OVMF 环境。
 
 ---

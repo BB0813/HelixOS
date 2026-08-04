@@ -77,6 +77,8 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | `/bin/busybox` | 可选静态 BusyBox（GPL，fetch 脚本） |
 | `/bin/hello.dyn` `/lib/ld-helix.so` | M6 最小动态（自研 ld-helix） |
 | `/bin/hello.musl` `/lib/ld-musl-x86_64.so.1` `/lib/libc.so` | **真 musl** PIE + loader |
+| `/bin/msh` | M11 用户态 shell (fork/exec/wait/pipe) |
+| `/bin/tui` | M19 用户态 TUI shell（fb mmap + PS/2 键盘） |
 
 ## Changelog
 
@@ -101,4 +103,5 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-04 | M17 TCP 重传：TXQ 入队 + ACK 清除 + `tcp_retransmit()` 每 net_poll 调用；SYN_SENT/ESTABLISHED/FIN_WAIT_1 定时重发 |
 | 2026-08-04 | **修复**：tcp_init 不再 wipe 已 used 槽位（保留 pending child，否则被 active socket 复用导致 adopt 失败） |
 | 2026-08-04 | M18 fb user-space：`sys_mmap(fd=-4)` 映射 GOP framebuffer；`sys_fb_info`(546) 返回分辨率；`sys_readkey`(547) PS/2 键盘非阻塞读；helixbox `HelixFBInfoOK`/`HelixFBMmapOK`/`HelixKbOK` |
+| 2026-08-04 | M19 TUI shell：用户态 mini-terminal（`bin/tui`）使用 fb mmap + PS/2 键盘；8x16 VGA 字体；内置 help/clear/echo/ls/cat/ps/tcpstat/time/reboot/exit；内核 shell `tui` 命令启动 |
 

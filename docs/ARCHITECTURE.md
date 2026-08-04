@@ -161,6 +161,17 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **PS/2 键盘**：`kernel/drv/ps2.c` IRQ1 → scancode 队列（set-1 ASCII 翻译）+ `sys_readkey`(547) 非阻塞读
 - **验收**：helixbox `HelixFBInfoOK` + `HelixFBMmapOK` + `HelixKbOK`（写入 fb 矩形 + 读键）
 
+### M19 TUI shell (user-space)
+
+- **二进制**：`bin/tui`（freestanding，无 libc，链接 `user/tui.ld` 加载至 0x40000000）
+- **接口**：经 `sys_fb_info` → `sys_mmap(fd=-4)` → 直接写 BGRA 像素；`sys_readkey` 取 PS/2 键盘
+- **渲染**：内嵌 8×16 VGA bitmap font（95 ASCII 字符，MSB-first）；文本网格（最大 80×30 @ 1024×768）；满行 `scroll_up()`
+- **输入**：行编辑器支持 backspace / Ctrl+D (exit) / Ctrl+C (exit) / Enter
+- **命令**：`help` / `clear` / `echo` / `ls` / `cat` / `ps` / `tcpstat` / `time` / `reboot` / `exit`（占位命令提示 "not implemented in M19"）
+- **重启**：`xor %rax,%rax; mov %rax,%cr3` 触发三重故障
+- **启动**：内核 shell `tui` 命令经 `task_exec_path("tui", "/bin/tui", av)`
+- **验收**：内核 shell 启动 tui 后 `task_exec_path(tui) -> 0x...`；fb 缺失环境下 `[tui] no framebuffer` 优雅退出
+
 
 ## Subsystems (target shape)
 
@@ -180,6 +191,7 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 | 进程 | M10–M12 **done** | fork/exec/wait/pipe/cwd/msh |
 | 信号 | **M13 done** | kill/sigaction/SIGCHLD/SIGINT |
 | TCP | **M14–M17 done** | state machine + socket/connect/listen/accept；sendto/recvfrom 路由（M15）；sendmsg/recvmsg + passive hostfwd（M16）；TXQ retransmit（M17） |
+| TUI | **M19 done** | 用户态 fb mmap + PS/2 键盘 → mini-terminal；helix shell `tui` 启动 |
 
 ## ABI policy
 

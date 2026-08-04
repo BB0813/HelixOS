@@ -72,6 +72,7 @@ USER_BOX_ELF   := $(BUILD)/user/helixbox.elf
 USER_LD_ELF    := $(BUILD)/user/ld-helix.so
 USER_DYN_ELF   := $(BUILD)/user/hello.dyn
 USER_MSH_ELF   := $(BUILD)/user/msh.elf
+USER_TUI_ELF   := $(BUILD)/user/tui.elf
 USER_INIT_HDR  := $(GEN)/user_init_elf.h
 USER_TASK2_HDR := $(GEN)/user_task2_elf.h
 
@@ -105,6 +106,8 @@ $(BUILD)/user/hello_dyn.o: user/hello_dyn.c user/usys.h | dirs
 	$(CC) $(USER_CFLAGS) -c $< -o $@
 $(BUILD)/user/msh.o: user/msh.c user/usys.h | dirs
 	$(CC) $(USER_CFLAGS) -c $< -o $@
+$(BUILD)/user/tui.o: user/tui.c user/usys.h | dirs
+	$(CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_INIT_ELF): $(BUILD)/user/init.o user/user_init.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/user_init.ld -o $@ $<
@@ -116,6 +119,8 @@ $(USER_LD_ELF): $(BUILD)/user/ld_helix.o user/ld_helix.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/ld_helix.ld -o $@ $<
 $(USER_MSH_ELF): $(BUILD)/user/msh.o user/msh.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/msh.ld -o $@ $<
+$(USER_TUI_ELF): $(BUILD)/user/tui.o user/tui.ld
+	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/tui.ld -o $@ $<
 
 $(BUILD)/user/hello_dyn.raw: $(BUILD)/user/hello_dyn.o user/hello_dyn.ld
 	$(LD_LLD) -m elf_x86_64 -static -nostdlib -T user/hello_dyn.ld -o $@ $<
@@ -130,7 +135,7 @@ $(USER_INIT_HDR): $(USER_INIT_ELF) scripts/bin2hdr.py
 $(USER_TASK2_HDR): $(USER_TASK2_ELF) scripts/bin2hdr.py
 	$(PYTHON) scripts/bin2hdr.py build/user/task2.elf -o include/generated/user_task2_elf.h -n user_task2_elf
 
-user: $(USER_INIT_ELF) $(USER_TASK2_ELF) $(USER_BOX_ELF) $(USER_LD_ELF) $(USER_DYN_ELF) $(USER_MSH_ELF) \
+user: $(USER_INIT_ELF) $(USER_TASK2_ELF) $(USER_BOX_ELF) $(USER_LD_ELF) $(USER_DYN_ELF) $(USER_MSH_ELF) $(USER_TUI_ELF) \
 	$(USER_INIT_HDR) $(USER_TASK2_HDR)
 
 $(BUILD)/kernel/proc/userland.o: $(USER_INIT_HDR) $(USER_TASK2_HDR)

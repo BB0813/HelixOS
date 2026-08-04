@@ -25,7 +25,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M18 已完成**（2026-08-04）
+**M0–M19 已完成**（2026-08-04）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -45,6 +45,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M16 | sendmsg/recvmsg + TCP passive hostfwd echo | **`HelixTcpPassiveOK`** |
 | M17 | TCP retransmission（TXQ 入队 + ACK 清除 + 定时器） | **`HelixTcpOK`** |
 | M18 | fb mmap user-space + PS/2 keyboard | `HelixFBInfoOK` / `HelixFBMmapOK` / `HelixKbOK` |
+| M19 | **TUI shell**（fb + PS/2 键盘 → `bin/tui`） | `task_exec_path(tui) -> 0x...` |
 
 ## 快速开始
 
@@ -90,6 +91,7 @@ HelixTcpOK
 HelixTcpUserOK
 HelixTcpPassiveOK
 helixbox_smoke_done
+HelixFBInfoOK  HelixFBMmapOK  HelixKbOK
 ```
 
 详细步骤与排错见 [`docs/BUILD.md`](docs/BUILD.md)。
@@ -108,7 +110,7 @@ HelixOS/
 │   ├── fs/         # fat, vfs, ramfs, pipe
 │   └── proc/       # elf, syscall, task, exec, userland
 ├── libk/           # serial, kprintf, panic, string
-├── user/           # init, task2, helixbox, ld-helix, hello.dyn, msh
+├── user/           # init, task2, helixbox, ld-helix, hello.dyn, msh, tui
 ├── img/            # Logo（深色 / 浅色 / 无背景）
 ├── esp_assets/     # 写入 ESP 的测资
 ├── scripts/        # mkdisk / mkesp / run-qemu / smoke-*

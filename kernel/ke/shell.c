@@ -32,6 +32,7 @@ static void cmd_help(void)
     kprintf("  uptime   — ticks since timer init\n");
     kprintf("  ls       — list root directory (VFS)\n");
     kprintf("  cat PATH — read file via VFS\n");
+    kprintf("  tui      — launch M19 TUI shell (fb + PS/2)\n");
     kprintf("  halt     — cli; hlt loop\n");
 }
 
@@ -159,6 +160,13 @@ static void run_line(char *line)
         cmd_cat(0);
     else if (strcmp(line, "halt") == 0)
         cmd_halt();
+    else if (strcmp(line, "tui") == 0) {
+        /* M19: launch TUI shell from disk */
+        extern struct task *task_exec_path(const char *name, const char *path, const char *const argv[]);
+        const char *av[] = { "tui", 0 };
+        struct task *t = task_exec_path("tui", "/bin/tui", av);
+        kprintf("[shell] task_exec_path(tui) -> %p\n", (void *)t);
+    }
     else
         kprintf("unknown command: %s (try help)\n", line);
 }
