@@ -59,35 +59,174 @@ static int msh_streq(const char *a, const char *b)
     return *a == *b;
 }
 
-/* Read a line from fd 0 (blocking loop on EAGAIN). Returns 0 on EOF. */
+/* D3: line editor — cursor + history ring + Ctrl+A/E/W/U + arrow keys. */
+#define MSH_HIST_MAX 16
+static char msh_history[MSH_HIST_MAX][MSH_LINE_MAX];
+static int  msh_hcount = 0;
+static int  msh_hidx   = -1;       /* -1 = on draft line; 0..hcount-1 = history index */
+static char msh_draft[MSH_LINE_MAX];
+
+static void msh_redraw(const char *line, long cur, long len)
+{
+    /* Move to col 0, rewrite whole line, then back up (len - cur) chars. */
+    usys6(SYS_write, 1, (long)"\r", 1, 0, 0, 0);
+    usys6(SYS_write, 1, (long)line, len, 0, 0, 0);
+    /* Erase stale tail by overwriting with spaces (cheap on serial log too). */
+    usys6(SYS_write, 1, (long)" ", 1, 0, 0, 0);
+    usys6(SYS_write, 1, (long)"\r", 1, 0, 0, 0);
+    usys6(SYS_write, 1, (long)line, len, 0, 0, 0);
+    long nback = len - cur;
+    char bs[64];
+    long k = nback < 63 ? nback : 63;
+    for (long i = 0; i < k; i++) bs[i] = '\b';
+    usys6(SYS_write, 1, (long)bs, k, 0, 0, 0);
+}
+
+static void msh_history_push(const char *line)
+{
+    if (line[0] == 0) return;
+    /* Drop duplicate of last entry. */
+    if (msh_hcount > 0) {
+        int last = (msh_hcount - 1) % MSH_HIST_MAX;
+        if (msh_streq(msh_history[last], line)) return;
+    }
+    int slot = msh_hcount % MSH_HIST_MAX;
+    long i = 0;
+    while (i < MSH_LINE_MAX - 1 && line[i]) { msh_history[slot][i] = line[i]; i++; }
+    msh_history[slot][i] = 0;
+    msh_hcount++;
+}
+
+/* D3: full-featured line editor. Returns bytes read (excluding newline) or 0 on EOF. */
 static long msh_readline(char *buf, long cap)
 {
-    long i = 0;
+    long len = 0, cur = 0;
+    buf[0] = 0;
+    msh_hidx = -1;
+    msh_draft[0] = 0;
+
+    enum { ST_IDLE, ST_ESC, ST_CSI } st = ST_IDLE;
+
     for (;;) {
         char c = 0;
         long r = usys6(SYS_read, 0, (long)&c, 1, 0, 0, 0);
         if (r == 0)
-            return i > 0 ? i : 0; /* EOF */
+            return len > 0 ? len : 0; /* EOF */
         if (r < 0) {
             usys6(SYS_yield, 0, 0, 0, 0, 0, 0);
             continue;
         }
-        if (c == '\n' || c == '\r')
-            break;
-        if (c == 8 || c == 127) { /* backspace */
-            if (i > 0) {
-                i--;
-                msh_write("\b \b");
+
+        if (st == ST_ESC) {
+            if (c == '[') { st = ST_CSI; continue; }
+            st = ST_IDLE;
+        } else if (st == ST_CSI) {
+            st = ST_IDLE;
+            if (c == 'A') {  /* up — older history */
+                if (msh_hcount == 0) continue;
+                if (msh_hidx == -1) {
+                    long i = 0;
+                    while (i < MSH_LINE_MAX - 1 && buf[i]) { msh_draft[i] = buf[i]; i++; }
+                    msh_draft[i] = 0;
+                    msh_hidx = msh_hcount - 1;
+                } else if (msh_hidx > 0) {
+                    msh_hidx--;
+                } else {
+                    continue;
+                }
+                goto history_load;
+            } else if (c == 'B') {  /* down — newer history */
+                if (msh_hidx == -1) continue;
+                if (msh_hidx < msh_hcount - 1) {
+                    msh_hidx++;
+                    goto history_load;
+                }
+                /* step past last → restore draft */
+                msh_hidx = -1;
+                long i = 0;
+                while (i < MSH_LINE_MAX - 1 && msh_draft[i]) { buf[i] = msh_draft[i]; i++; }
+                buf[i] = 0;
+                len = i; cur = len;
+                msh_redraw(buf, cur, len);
+                continue;
+            } else if (c == 'C') {  /* right */
+                if (cur < len) { cur++; usys6(SYS_write, 1, (long)"\033[C", 3, 0, 0, 0); }
+                continue;
+            } else if (c == 'D') {  /* left */
+                if (cur > 0) { cur--; usys6(SYS_write, 1, (long)"\b", 1, 0, 0, 0); }
+                continue;
+            } else {
+                continue;
+            }
+        }
+
+        /* raw char handling */
+        if (c == 0x1B) { st = ST_ESC; continue; }
+        if (c == '\n' || c == '\r') {
+            usys6(SYS_write, 1, (long)"\n", 1, 0, 0, 0);
+            buf[len] = 0;
+            msh_history_push(buf);
+            return len;
+        }
+        if (c == 0x01) {  /* Ctrl+A → line start */
+            while (cur > 0) { cur--; usys6(SYS_write, 1, (long)"\b", 1, 0, 0, 0); }
+            continue;
+        }
+        if (c == 0x05) {  /* Ctrl+E → line end */
+            while (cur < len) { usys6(SYS_write, 1, (long)"\033[C", 3, 0, 0, 0); cur++; }
+            continue;
+        }
+        if (c == 0x17) {  /* Ctrl+W → delete word back */
+            long new_cur = cur;
+            while (new_cur > 0 && buf[new_cur - 1] == ' ') new_cur--;
+            while (new_cur > 0 && buf[new_cur - 1] != ' ') new_cur--;
+            if (new_cur < cur) {
+                long del = cur - new_cur;
+                long mvlen = len - cur;
+                for (long k = 0; k <= mvlen; k++) buf[new_cur + k] = buf[cur + k];
+                len -= del; cur = new_cur;
+                msh_redraw(buf, cur, len);
             }
             continue;
         }
-        if (i + 1 < cap) {
-            buf[i++] = c;
-            usys6(SYS_write, 1, (long)&c, 1, 0, 0, 0); /* echo */
+        if (c == 0x15) {  /* Ctrl+U → clear line */
+            buf[0] = 0; len = 0; cur = 0;
+            msh_redraw(buf, cur, len);
+            continue;
         }
+        if (c == 0x03) {  /* Ctrl+C — leave line intact, signal SIGINT to shell */
+            usys6(SYS_write, 1, (long)"^C\n", 3, 0, 0, 0);
+            buf[0] = 0;
+            return 0;
+        }
+        if (c == '\b' || c == 0x7F) {  /* backspace / DEL */
+            if (cur == 0) continue;
+            long mvlen = len - cur;
+            for (long k = 0; k <= mvlen; k++) buf[cur - 1 + k] = buf[cur + k];
+            len--; cur--;
+            msh_redraw(buf, cur, len);
+            continue;
+        }
+        if (c < 0x20 || c >= 0x7F) continue;
+        if (len + 1 >= cap) continue;
+        /* insert at cur */
+        long mvlen = len - cur;
+        for (long k = mvlen; k >= 0; k--) buf[cur + 1 + k] = buf[cur + k];
+        buf[cur] = c;
+        len++; cur++;
+        msh_redraw(buf, cur, len);
+        continue;
+
+    history_load: {
+        int slot = msh_hidx % MSH_HIST_MAX;
+        long i = 0;
+        while (i < MSH_LINE_MAX - 1 && msh_history[slot][i]) { buf[i] = msh_history[slot][i]; i++; }
+        buf[i] = 0;
+        len = i; cur = len;
+        msh_redraw(buf, cur, len);
+        continue;
     }
-    buf[i] = 0;
-    return i;
+    }
 }
 
 /* Split a stage into argv tokens. Returns argc. */

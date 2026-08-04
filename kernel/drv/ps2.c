@@ -30,6 +30,9 @@ static u32 g_ms_head, g_ms_tail;
 static u8  g_ms_packet[3];
 static u8  g_ms_byte_idx;
 
+/* D3: extended scancode 0xE0 prefix pending. */
+static u8  g_e0_pending;
+
 /* Wait for status register to clear input buffer (bit 1 = input full). */
 static void ps2_wait_input(void)
 {
@@ -103,6 +106,31 @@ void ps2_handler(void)
     if (sc == 0x2A || sc == 0x36) { g_shift = 1; return; }
     if (sc == 0xAA || sc == 0xB6) { g_shift = 0; return; }
 
+    /* D3: 0xE0 prefix — extended scancodes. Bit 7 set on 0xE0 was previously
+     * dropped at the `sc & 0x80` filter below; capture it and translate the
+     * following byte into an xterm-style ESC [ X sequence for arrow keys. */
+    if (sc == 0xE0) { g_e0_pending = 1; return; }
+
+    if (g_e0_pending) {
+        g_e0_pending = 0;
+        /* xterm: ESC [ A=up, B=down, C=right, D=left.
+         * PS/2 make codes: up=0x48, down=0x50, left=0x4B, right=0x4D. */
+        char final = 0;
+        switch (sc) {
+            case 0x48: final = 'A'; break;
+            case 0x50: final = 'B'; break;
+            case 0x4B: final = 'D'; break;
+            case 0x4D: final = 'C'; break;
+        }
+        if (final) {
+            kb_put(0x1B);
+            kb_put('[');
+            kb_put(final);
+        }
+        /* 0xE0 prefix break codes (0xC8/0xD0/0xCB/0xCD etc.) are swallowed. */
+        return;
+    }
+
     /* Ignore break codes (bit 7 set) and invalid */
     if (sc & 0x80 || sc >= 128) return;
 
@@ -114,6 +142,7 @@ void ps2_init(void)
 {
     g_kb_head = g_kb_tail = 0;
     g_shift = 0;
+    g_e0_pending = 0;
     /* Flush any pending scancodes */
     while (inb(PS2_STATUS_PORT) & 1)
         inb(PS2_DATA_PORT);
