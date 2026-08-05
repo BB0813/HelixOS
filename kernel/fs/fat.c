@@ -837,7 +837,246 @@ static int root_unlink_and_free(const char name83[11])
     return -1;
 }
 
-/* Create empty file or dir in root only (path like "FOO.TXT" or "BAR"). */
+/* M24: resolve parent dir + leaf 8.3 name for unlink/rename.
+ * Walks path components, last segment is encoded as 8.3 into out_name83.
+ * Returns parent cluster (or 0 for FAT16 root region), fills out_name83[11].
+ * Returns -1 on any error (not found, mid-component not a dir). */
+static int fat_resolve_parent(const char *path, u32 *out_parent, char out_name83[11])
+{
+    while (*path == '/')
+        path++;
+    if (!*path)
+        return -1; /* root itself not unlinkable */
+
+    u32 dir_clus = (g_fat.fat_type == 32) ? g_fat.root_clus : 0;
+    char comp[64];
+    for (;;) {
+        int n = 0;
+        while (*path && *path != '/' && n < (int)sizeof(comp) - 1)
+            comp[n++] = *path++;
+        comp[n] = 0;
+        while (*path == '/')
+            path++;
+
+        char w[11];
+        encode_83_upper(comp, w);
+
+        if (!*path) {
+            /* leaf component — encode and return */
+            memcpy(out_name83, w, 11);
+            *out_parent = dir_clus;
+            return 0;
+        }
+        /* mid-component — must be a directory */
+        u32 cl = 0, sz = 0;
+        u8 attr = 0;
+        if (find_in_dir(dir_clus, w, &cl, &sz, &attr) != 0)
+            return -1;
+        if (!(attr & 0x10))
+            return -1;
+        dir_clus = cl;
+    }
+}
+
+/* M24: mark an entry deleted (0xE5) inside a given parent directory cluster chain.
+ * Works for both FAT16 root region (parent==0) and FAT32 subdirs. */
+static int dir_unlink_at(u32 parent_clus, const char name83[11])
+{
+    u8 sec[512];
+    if (parent_clus == 0 && g_fat.fat_type != 32) {
+        for (u32 s = 0; s < g_fat.root_sectors; s++) {
+            if (read_sector(g_fat.root_lba + s, sec) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0 || e[0] == 0xE5 || e[11] == 0x0F)
+                    continue;
+                if (memcmp(e, name83, 11) != 0)
+                    continue;
+                u32 c = e[26] | (e[27] << 8);
+                e[0] = 0xE5;
+                if (write_sector(g_fat.root_lba + s, sec) != 0)
+                    return -1;
+                if (c >= 2)
+                    fat_free_chain(c);
+                return 0;
+            }
+        }
+        return -1;
+    }
+    u32 clus = parent_clus ? parent_clus : g_fat.root_clus;
+    while (!fat_is_eof(clus) && clus >= 2) {
+        for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
+            u32 lba = clus_to_lba(clus) + s;
+            if (read_sector(lba, sec) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0 || e[0] == 0xE5 || e[11] == 0x0F)
+                    continue;
+                if (memcmp(e, name83, 11) != 0)
+                    continue;
+                u32 c = e[26] | (e[27] << 8);
+                if (g_fat.fat_type == 32)
+                    c |= (u32)(e[20] | (e[21] << 8)) << 16;
+                e[0] = 0xE5;
+                if (write_sector(lba, sec) != 0)
+                    return -1;
+                if (c >= 2)
+                    fat_free_chain(c);
+                return 0;
+            }
+        }
+        clus = fat_get(clus);
+    }
+    return -1;
+}
+
+/* M24: rename a dirent in-place inside its parent (no cross-dir rename).
+ * The directory cluster of the entry itself is unchanged. */
+static int dir_rename_at(u32 parent_clus, const char old_name83[11],
+                         const char new_name83[11])
+{
+    u8 sec[512];
+    int (*visit)(u32, u8 *, int) = 0; /* unused; we duplicate logic for FAT16/FAT32 */
+    (void)visit;
+    if (parent_clus == 0 && g_fat.fat_type != 32) {
+        for (u32 s = 0; s < g_fat.root_sectors; s++) {
+            if (read_sector(g_fat.root_lba + s, sec) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0 || e[0] == 0xE5 || e[11] == 0x0F)
+                    continue;
+                if (memcmp(e, old_name83, 11) != 0)
+                    continue;
+                memcpy(e, new_name83, 11);
+                if (write_sector(g_fat.root_lba + s, sec) != 0)
+                    return -1;
+                return 0;
+            }
+        }
+        return -1;
+    }
+    u32 clus = parent_clus ? parent_clus : g_fat.root_clus;
+    while (!fat_is_eof(clus) && clus >= 2) {
+        for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
+            u32 lba = clus_to_lba(clus) + s;
+            if (read_sector(lba, sec) != 0)
+                return -1;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0 || e[0] == 0xE5 || e[11] == 0x0F)
+                    continue;
+                if (memcmp(e, old_name83, 11) != 0)
+                    continue;
+                memcpy(e, new_name83, 11);
+                if (write_sector(lba, sec) != 0)
+                    return -1;
+                return 0;
+            }
+        }
+        clus = fat_get(clus);
+    }
+    return -1;
+}
+
+/* M24: is the given directory empty? (Used by rmdir.) */
+static int dir_is_empty(u32 dir_clus)
+{
+    u8 sec[512];
+    if (dir_clus == 0 && g_fat.fat_type != 32) {
+        for (u32 s = 0; s < g_fat.root_sectors; s++) {
+            if (read_sector(g_fat.root_lba + s, sec) != 0)
+                return 0;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0)
+                    return 1;
+                if (e[0] == 0xE5)
+                    continue;
+                if (e[11] == 0x0F)
+                    continue;
+                /* . and .. are always present; skip them */
+                if (e[0] == '.' && (e[1] == ' ' || e[1] == '.'))
+                    continue;
+                return 0; /* some real entry present */
+            }
+        }
+        return 1;
+    }
+    u32 clus = dir_clus;
+    while (!fat_is_eof(clus) && clus >= 2) {
+        for (u8 s = 0; s < g_fat.sec_per_clus; s++) {
+            u32 lba = clus_to_lba(clus) + s;
+            if (read_sector(lba, sec) != 0)
+                return 0;
+            for (u32 i = 0; i < 512; i += 32) {
+                u8 *e = &sec[i];
+                if (e[0] == 0)
+                    return 1;
+                if (e[0] == 0xE5)
+                    continue;
+                if (e[11] == 0x0F)
+                    continue;
+                if (e[0] == '.' && (e[1] == ' ' || e[1] == '.'))
+                    continue;
+                return 0;
+            }
+        }
+        clus = fat_get(clus);
+    }
+    return 1;
+}
+/* M24: high-level unlink/rmdir/rename API. Each takes an absolute path
+ * resolved against the FAT root. Returns 0 on success, -1 on error. */
+int fat_unlink_path(const char *path)
+{
+    if (!fat_writable_type())
+        return -1;
+    u32 parent = 0;
+    char name83[11];
+    if (fat_resolve_parent(path, &parent, name83) != 0)
+        return -1;
+    return dir_unlink_at(parent, name83);
+}
+
+int fat_rmdir_path(const char *path)
+{
+    if (!fat_writable_type())
+        return -1;
+    /* Check the leaf is a directory AND empty before unlinking. */
+    u32 cl = 0, sz = 0;
+    u8 attr = 0;
+    if (fat_resolve(path, &cl, &sz, &attr) != 0)
+        return -1;
+    if (!(attr & 0x10))
+        return -1; /* not a directory */
+    if (!dir_is_empty(cl))
+        return -1;
+    u32 parent = 0;
+    char name83[11];
+    if (fat_resolve_parent(path, &parent, name83) != 0)
+        return -1;
+    return dir_unlink_at(parent, name83);
+}
+
+int fat_rename_path(const char *oldp, const char *newp)
+{
+    if (!fat_writable_type())
+        return -1;
+    u32 old_parent = 0, new_parent = 0;
+    char old83[11], new83[11];
+    if (fat_resolve_parent(oldp, &old_parent, old83) != 0)
+        return -1;
+    if (fat_resolve_parent(newp, &new_parent, new83) != 0)
+        return -1;
+    /* Same-directory only — cross-dir move would need to copy chain + write dot-dot. */
+    if (old_parent != new_parent)
+        return -1;
+    return dir_rename_at(old_parent, old83, new83);
+}
+
 static int fat_create_root(const char *path, int is_dir, u32 *out_clus)
 {
     if (!fat_writable_type())

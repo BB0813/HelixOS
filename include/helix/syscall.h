@@ -60,6 +60,8 @@
 #define SYS_recvfrom        45
 #define SYS_bind            49
 #define SYS_pipe            22
+#define SYS_ppoll          271
+#define SYS_poll             7
 #define SYS_readv           19
 #define SYS_getrandom      318
 #define SYS_fb_info        546

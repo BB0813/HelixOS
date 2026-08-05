@@ -149,7 +149,12 @@ void idt_set_gate(int vec, void (*handler)(void))
     struct idt_entry *e = &g_idt[vec];
     e->offset_low  = (u16)(addr & 0xFFFF);
     e->selector    = g_kernel_cs ? g_kernel_cs : GDT_KERNEL_CS;
-    e->ist         = 0;
+    /* Use IST slot 0 for hardware IRQs (vectors 32..47) so the ISR runs
+     * on a dedicated stack instead of the current task's kstack.
+     * Without this, a timer IRQ fired mid-syscall would clobber the
+     * syscall frame (the timer fires during syscalls like poll that
+     * take long enough for ~1 tick). */
+    e->ist         = (vec >= 32 && vec < 48) ? 1 : 0;
     e->type_attr   = 0x8E; /* present, DPL0, interrupt gate */
     e->offset_mid  = (u16)((addr >> 16) & 0xFFFF);
     e->offset_high = (u32)((addr >> 32) & 0xFFFFFFFF);

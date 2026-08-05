@@ -405,6 +405,27 @@ Goal：PS/2 控制器第二通道（IRQ12）启用 + 鼠标 3-byte packet 解析
 
 ---
 
+## M24 — POSIX file ops 收尾 `[x]`
+
+Goal：补全 Linux ABI 差距（poll / fsync / unlink / rmdir / rename）+ silent ENOSYS。
+
+- [x] `include/helix/vfs.h` 加 `struct helix_pollfd` + POLL defines + `vfs_ops` 5 新字段（poll/unlink/rmdir/rename/fsync）= 14 字段 112 字节
+- [x] `kernel/proc/syscall.c`：`sys_poll` / `sys_ppoll`（不阻塞 + `vfs_poll_one`）+ `sys_unlink` / `sys_rmdir` / `sys_rename`（resolve_user_path + vfs_*）+ `sys_fsync` / `sys_fdatasync`
+- [x] dispatch table 加 `case 7 / 271 / 74 / 75 / 82 / 84 / 87`，default 改 silent `ERR(ENOSYS)`（不 kprintf）
+- [x] `kernel/fs/vfs.c`：`vfs_unlink/rmdir/rename` 分发到 FAT + ramfs ops；`vfs_poll_one` default (stdin → POLLIN, stdout → POLLOUT, regular → POLLIN|POLLOUT)
+- [x] `kernel/fs/fat.c`：`fat_resolve_parent` + `dir_unlink_at`（mark 0xE5 + `fat_free_chain`）+ `dir_rename_at` + `dir_is_empty` + `fat_unlink_path/rmdir_path/rename_path`
+- [x] `kernel/fs/ramfs.c`：`node_release` + `node_child_count` + `ramfs_unlink_op/rmdir_op/rename_op`，wire 到 `g_ramfs_ops`
+- [x] `user/helixbox.c`：`HelixPollOK`（poll fd=0） + `HelixUnlinkOK`（create + unlink + rmdir + rename） + `HelixFsyncOK`（fsync + fdatasync + bad-fd EBADF + O_TRUNC 重置 size 0）
+- [x] init message: `"init syscall dispatch (M24 poll/ppoll + silent ENOSYS)"`
+
+**验收**：`make smoke-linux` 串口含 `HelixPollOK` + `HelixUnlinkOK` + `HelixFsyncOK`，无 FAIL；
+`grep -E "\[syscall\] ENOSYS" serial.log` 应为空（silent）；smoke-fs EXIT=0 不回归。
+
+**已知边界**: rename 同目录 only (cross-dir 需 cluster chain copy)；fsync 是 no-op (FAT+ramfs
+synchronous write 保留 op 字段为未来 buffered fs 留口)。
+
+---
+
 ## 路线 D — 收尾修复补全 `[x]`
 
 路线 A→B→C 完成后进入 "已知缺陷修复 + 验证闭环 + 用户体验提升" 阶段。

@@ -58,6 +58,13 @@
 | 22 | pipe | **done** | 环形缓冲；EAGAIN 非阻塞 |
 | 158 | arch_prctl | **partial** | `ARCH_SET_FS` / `GET_FS`（MSR） |
 | 217 | getdents64 | **done** | FAT 根或 /tmp |
+| 7 | poll | **done** | M24：`helix_pollfd[]`；不阻塞（timeout 忽略）；POLLNVAL/POLLERR/POLLIN/POLLOUT |
+| 271 | ppoll | **done** | M24：忽略 timespec/sigmask；委托 sys_poll |
+| 74 | fsync | **done** | M24：验证 fd；当前 FAT/ramfs 同步 write，no-op |
+| 75 | fdatasync | **done** | M24：同 fsync（无独立 metadata flush 路径） |
+| 82 | rename | **done** | M24：同目录 only (cross-dir 留 M25+)，FAT + ramfs |
+| 84 | rmdir | **done** | M24：目录必须空；FAT + ramfs |
+| 87 | unlink | **done** | M24：FAT mark 0xE5 + fat_free_chain；ramfs node_release |
 | 231 | exit_group | **done** | |
 | 257 | openat | **done** | 重定向至 open |
 | 262 | newfstatat | **done** | 重定向至 fstatat |
@@ -117,6 +124,7 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-04 | M21 FAT32 完善：`fat_free_chain` + `root_unlink_and_free` helper（FAT16 固定根 + FAT32 root cluster chain）；`fat_selftest_write` 改走 helper 修 stale-cleanup；`mkdisk.py` 新增 `build_fat32_volume`（ESP ≥ 64 MiB 自动选 FAT32）；mformat + mcopy 验证 64 MiB 大盘 FAT32 镜像两次连 boot → **`HelixFATWriteOK`**（cluster 3 重新分配） |
 | 2026-08-04 | M22 抢占式调度：timer.c 加 `g_preempt_pending` 累加 + `timer_preempt_pending()` xchg-clear + `PREEMPT_THRESHOLD=8`；syscall.c 返回路径加抢占检查（gate 1: `task_count_alive()>1`, gate 2: 阈值），命中后 `task_yield()`；helixbox 加 `HelixPreemptOK` smoke marker（fork 心跳 child 写 20 dots）；smoke-fs 不回归，smoke-net HelixTcpUserOK/HelixTcpPassiveOK 不回归 |
 | 2026-08-05 | M23 PS/2 鼠标：`kernel/drv/ps2.c` 抽 `ps2_write_cmd`/`ps2_write_aux`/`ps2_flush_data` helper；`ps2_init` 第二阶段启用 aux port + IRQ12 + 100Hz sample rate；`ps2_mouse_handler` 累积 3-byte packet → `{dx,dy,buttons}` ring buffer（y 轴翻转）；`sys_mouse_read`(548) 非阻塞 drain，空时 -EAGAIN；helixbox 加 `HelixMouseOK` smoke marker；smoke-fs EXIT=0 不回归 |
+| 2026-08-05 | M24 POSIX file ops 收尾：`struct vfs_ops` 扩到 14 字段（加 poll/unlink/rmdir/rename/fsync）；`sys_poll`/`sys_ppoll`(7/271) + `sys_unlink`/`sys_rmdir`/`sys_rename`(87/84/82) + `sys_fsync`/`sys_fdatasync`(74/75)；`vfs_poll_one` default by file type；FAT `fat_resolve_parent` + `dir_unlink_at` (0xE5 + fat_free_chain) + `dir_rename_at` + `dir_is_empty`；ramfs `node_release` + `node_child_count` + `ramfs_unlink_op/rmdir_op/rename_op`；dispatch default 改 silent `ERR(ENOSYS)` (无 `[syscall] ENOSYS` 刷屏)；helixbox 加 `HelixPollOK` + `HelixUnlinkOK` + `HelixFsyncOK` smoke markers |
 | 2026-08-05 | **路线 D 收尾**：D1 `Makefile` smoke-net 端口等待 + `HelixTcpUserOK`/`HelixTcpPassiveOK` 升 hard-fail + `kernel/net/tcp.c` max-retries log 节流 30s；D2 `scripts/mkdisk.py` FAT32 root 路径走 `materialize_dir` + `is_root` flag 修 nested dir bug（mtools mdir 验证 EFI/BOOT/BOOTX64.EFI 可达）；D3 `kernel/drv/ps2.c` 加 0xE0 prefix 翻译箭头键 ESC [ A/B/C/D + `user/msh.c` msh_readline 重写为 cursor + 16 history + Ctrl+A/E/W/U/C |
 | 2026-08-05 | M20 VFS ext：`fat_getdents64` 改用 `fs_priv` 存 `fat_dir_iter` 走 cluster chain（subdir open 完整）；`fat_resolve` 加 `out_attr` 报告 leaf 是 dir；`fat_open` 检测 `attr & 0x10` 时返回 `is_dir=1` + `fs_priv=fat_dir_iter`；`syscall.c` 加 `case 21/90/91/92/93/94/132/133/280` 显式 -ENOSYS（不刷屏）；`mkdisk.py` 加 `--add-tree` + `--raw-fat` 标志；`mkdisk_deep.sh` 4 级目录验证 + mtools mdir 验证；helixbox `cmd_smoke` 加 subdir 探针 (`ls /etc` / `cat /etc/passwd` / `cat /etc/welcome.txt` / `ls /lib`) |
 | 2026-08-05 | M20 userland：`kernel/proc/exec.c` `linux_compat_run_busybox_applets` 5-applet chain (`echo HelixBusyBoxOK` → `cat /etc/welcome.txt` → `echo BB2_OK` → `true` → `echo HELIX_BB_DONE`) + 模块级 `g_bb_idx` 状态 + 自递归 exit-all-hook；`kernel/mm/heap.c` HEAP_PAGES 1024→2048 (4→8 MiB) 容纳 3+ BusyBox ELF 重 load；`user/msh.c` 加 6 builtin (`alias`/`unalias`/`export`/`unset`/`test` 含 `[` 形式 /`type`) + 文件静态 `msh_aliases[16]` + `msh_envtab[32]` 表；`msh_exec_line` 拆为 line/pipeline/strtok_r 三层支持 `;` statement separator；alias expansion 在 `msh_exec_pipeline` 早段 (lookup → 拼 body+tail → 重 tokenize)；bi_test 修单参 `-f` 优先于二元 `=` 检查 |

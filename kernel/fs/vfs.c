@@ -300,6 +300,50 @@ int vfs_mkdir(const char *path, int mode)
     return -1;
 }
 
+/* M24: forward declarations from fat.c — only the dispatch helpers we need
+ * for unlink/rmdir/rename (these don't have a vfs_ops entry). */
+extern int fat_unlink_path(const char *path);
+extern int fat_rmdir_path(const char *path);
+extern int fat_rename_path(const char *oldp, const char *newp);
+
+int vfs_unlink(const char *path)
+{
+    if (!path)
+        return -1;
+    if (is_tmp_path(path)) {
+        if (!g_tmp_ops || !g_tmp_ops->unlink)
+            return -1;
+        return g_tmp_ops->unlink(path);
+    }
+    return fat_unlink_path(path);
+}
+
+int vfs_rmdir(const char *path)
+{
+    if (!path)
+        return -1;
+    if (is_tmp_path(path)) {
+        if (!g_tmp_ops || !g_tmp_ops->rmdir)
+            return -1;
+        return g_tmp_ops->rmdir(path);
+    }
+    return fat_rmdir_path(path);
+}
+
+int vfs_rename(const char *oldpath, const char *newpath)
+{
+    if (!oldpath || !newpath)
+        return -1;
+    if (is_tmp_path(oldpath) && is_tmp_path(newpath)) {
+        if (!g_tmp_ops || !g_tmp_ops->rename)
+            return -1;
+        return g_tmp_ops->rename(oldpath, newpath);
+    }
+    if (is_tmp_path(oldpath) || is_tmp_path(newpath))
+        return -1;
+    return fat_rename_path(oldpath, newpath);
+}
+
 int vfs_read_all(const char *path, void *buf, u64 cap, u64 *out_n)
 {
     struct vfs_file *f = 0;
@@ -405,6 +449,31 @@ int vfs_console_write(struct vfs_file *f, const char *buf, u64 len)
             user_line_flush();
     }
     return (int)len;
+}
+
+/* M24: poll one vfs_file. Dispatches to per-fs poll op; falls back to
+ * sensible defaults: console in → POLLIN, console out → POLLOUT,
+ * socket → handled inside ops->poll, regular file read → POLLIN if pos<size,
+ * write → POLLOUT always (no real write back-pressure). */
+int vfs_poll_one(struct vfs_file *f, short events)
+{
+    if (!f) return POLLNVAL;
+    if (f->ops && f->ops->poll) {
+        int mask = f->ops->poll(f);
+        /* mask is POLLIN/POLLOUT/POLLERR/POLLHUP bits */
+        if (mask < 0) return POLLERR;
+        return mask & (int)events;
+    }
+    /* Default: regular file */
+    int mask = 0;
+    if (f->is_console == 2)        mask |= POLLIN;   /* stdin always ready-ish */
+    else if (f->is_console == 1)   mask |= POLLOUT;  /* stdout always writable */
+    else if (f->is_dir)            mask |= POLLIN;   /* getdents64 supported */
+    else if (f->is_socket == 2)    mask |= POLLIN | POLLOUT;  /* TCP always "ready" */
+    else {                         mask |= POLLIN | POLLOUT;
+                                   if (f->size == 0) mask &= ~POLLIN;
+    }
+    return mask & (int)events;
 }
 
 long vfs_getdents64(struct vfs_file *f, void *buf, u64 len)

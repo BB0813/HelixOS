@@ -2,7 +2,18 @@
 
 #include "helix/types.h"
 
-/* Minimal VFS with root (FAT RO) + /tmp (ramfs RW). */
+/* Linux poll(2) event bits (subset). */
+#define POLLIN   0x001
+#define POLLOUT  0x004
+#define POLLERR  0x008
+#define POLLHUP  0x010
+#define POLLNVAL 0x020
+
+struct helix_pollfd {
+    int fd;
+    short events;
+    short revents;
+};
 
 #define VFS_PATH_MAX  256
 #define VFS_FD_MAX    16
@@ -37,6 +48,15 @@ struct vfs_ops {
     long (*getdents64)(struct vfs_file *f, void *buf, u64 len);
     long (*fstat)(struct vfs_file *f, void *statbuf);
     int  (*mkdir)(const char *path, int mode);
+    /* M24: return POLLIN/POLLOUT mask; 0 if none. Default handler returns
+     * POLLIN for read-side and POLLOUT for write-side of regular files. */
+    int  (*poll)(struct vfs_file *f);
+    /* M24: unlink/rmdir/rename (POSIX subset). Return 0 on success, -1 otherwise. */
+    int  (*unlink)(const char *path);
+    int  (*rmdir)(const char *path);
+    int  (*rename)(const char *oldpath, const char *newpath);
+    /* M24: fsync — flush pending writes; 0 on success, -1 on error. */
+    int  (*fsync)(struct vfs_file *f);
 };
 
 int  vfs_init(void);
@@ -48,6 +68,11 @@ int  vfs_read(struct vfs_file *f, void *buf, u64 len, u64 *out_n);
 int  vfs_write(struct vfs_file *f, const void *buf, u64 len, u64 *out_n);
 int  vfs_close(struct vfs_file *f);
 int  vfs_mkdir(const char *path, int mode);
+/* M24: unlink/rmdir/rename — return 0 on success, -1 on missing/EISDIR/etc.
+ * rename() is same-directory only (no cross-dir move). */
+int  vfs_unlink(const char *path);
+int  vfs_rmdir(const char *path);
+int  vfs_rename(const char *oldpath, const char *newpath);
 int  vfs_read_all(const char *path, void *buf, u64 cap, u64 *out_n);
 int  vfs_root_list(void (*cb)(const char *name, u64 size, void *user), void *user);
 /* Resolve path against cwd into absolute out[]. Handles ., .., //. Returns 0 or -1. */
@@ -64,3 +89,5 @@ void fd_hold(struct vfs_file *f);
 int  vfs_console_write(struct vfs_file *f, const char *buf, u64 len);
 long vfs_getdents64(struct vfs_file *f, void *buf, u64 len);
 long vfs_fstat(struct vfs_file *f, void *statbuf);
+/* M24: poll one file with given events mask; returns revents (POLLIN etc.). */
+int  vfs_poll_one(struct vfs_file *f, short events);

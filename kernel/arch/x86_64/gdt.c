@@ -68,6 +68,15 @@ void gdt_set_tss_rsp0(u64 rsp0)
     g_tss.rsp0 = rsp0;
 }
 
+/* Dedicated IST stack for IRQ handlers (vectors 32..47).
+ * Prevents ISR from clobbering the current task's syscall frame. */
+static u8 g_irq_stack[4096] __attribute__((aligned(16)));
+
+u64 gdt_irq_stack_top(void)
+{
+    return (u64)(uintptr_t)g_irq_stack + sizeof(g_irq_stack);
+}
+
 u16 gdt_kernel_cs(void)
 {
     return GDT_KERNEL_CS;
@@ -78,6 +87,7 @@ void gdt_init(void)
     memset(g_gdt, 0, sizeof(g_gdt));
     memset(&g_tss, 0, sizeof(g_tss));
     g_tss.iomap_base = sizeof(g_tss);
+    g_tss.ist[0] = (u64)(uintptr_t)g_irq_stack + sizeof(g_irq_stack);
 
     /* 0: null */
     gdt_set(0, 0, 0, 0, 0);

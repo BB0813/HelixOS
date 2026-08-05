@@ -183,6 +183,20 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **验收**：串口含 `[ps2] mouse ready (IRQ12 unmasked)`；helixbox 探针走通 `HelixMouseOK`（有鼠标移动时追加 "(events)"）
 - **QEMU headless**：无鼠标移动时 ring buffer 始终空，驱动 ready 视为通过；启用 `-display gtk/sdl` 后 IRQ12 触发
 
+### M24 POSIX file ops 收尾
+
+- **`struct vfs_ops` 扩展**：从 9 字段扩到 14 字段（加 `poll / unlink / rmdir / rename / fsync`），总 112 字节。所有 `.rdata` 里 ops 字面量必须 re-compile（fat/ramfs/pipe/vfs），否则 size mismatch 链接后 garbage data 跑偏
+- **`sys_poll` / `sys_ppoll` (Linux NR 7/271)**：user `helix_pollfd[]` 数组；每个 fd 调 `vfs_poll_one`；fd<0 → revents=0，fd 不存在 → POLLNVAL；不阻塞（timeout 忽略）
+- **`vfs_poll_one` default**：按 file 类型返回 mask (stdin → POLLIN, stdout → POLLOUT, dir → POLLIN, regular → POLLIN|POLLOUT，size=0 清 POLLIN)；`& events` 收窄
+- **`sys_unlink / sys_rmdir / sys_rename` (87/84/82)**：`resolve_user_path` (cwd-aware) → `vfs_*` → FAT / ramfs ops 分发
+- **FAT delete 实现**：`dir_unlink_at` mark `e[0]=0xE5` + `fat_free_chain(first_cluster)`；FAT16 root region 用 `g_fat.root_lba` + sec_i，FAT32 subdirs 走 cluster chain
+- **FAT rename same-dir only**：`fat_rename_path` 检查 `old_parent == new_parent` 后 `memcpy(e, new_name83, 11)`；cross-dir 留 M25+
+- **ramfs unlink/rmdir/rename**：`node_release(kfree data + memset slot)` + `node_child_count` (linear scan)；rename 同父 + 目标不存在约束
+- **`sys_fsync / sys_fdatasync` (74/75)**：验证 fd；FAT `write_sector` 同步走 AHCI + ramfs in-memory → 实际 no-op；保留 op 字段为未来 buffered fs 留口
+- **`O_TRUNC` 在 `fat_open`/`ramfs_open`**：原 M20 已实现（`node->size = 0` / FAT 现有 truncate 路径）
+- **silent ENOSYS default**：dispatch default 分支去掉 `kprintf` 刷屏，统一返回 `ERR(ENOSYS)`；`grep "\[syscall\] ENOSYS" serial.log` 应为空
+- **验收**：helixbox `HelixPollOK` (poll fd=0) + `HelixUnlinkOK` (create + unlink + rmdir + rename) + `HelixFsyncOK` (fsync + fdatasync + bad-fd EBADF + O_TRUNC 重置 size 0)
+
 ### M22 抢占式调度（preemptive）
 
 - **协作之上叠加 IRQ0 tick 抢占点**：`g_preempt_pending` 每 tick 累加；syscall 返回路径检查

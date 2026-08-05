@@ -362,6 +362,107 @@ static int ramfs_mkdir_op(const char *path, int mode)
     return ramfs_mkdir(path) == 0 ? 0 : -1;
 }
 
+/* M24: helper to free a node's data buffer and mark slot unused. */
+static void node_release(int idx)
+{
+    if (idx < 0 || idx >= RAMFS_MAX_NODES)
+        return;
+    if (g_nodes[idx].data) {
+        kfree(g_nodes[idx].data);
+        g_nodes[idx].data = 0;
+    }
+    memset(&g_nodes[idx], 0, sizeof(g_nodes[idx]));
+}
+
+/* M24: helper — count a node's children (excluding deleted/empty slots). */
+static int node_child_count(int idx)
+{
+    int n = 0;
+    for (int i = 0; i < RAMFS_MAX_NODES; i++) {
+        if (g_nodes[i].used && g_nodes[i].parent == idx)
+            n++;
+    }
+    return n;
+}
+
+/* M24: unlink a file or empty directory at /tmp/<rel>. Returns 0 or -1. */
+static int ramfs_unlink_op(const char *path)
+{
+    const char *rel = 0;
+    if (strip_tmp_prefix(path, &rel) != 0)
+        return -1;
+    if (!*rel || (rel[0] == '.' && rel[1] == 0))
+        return -1; /* cannot unlink /tmp itself or "." */
+    int parent = 0;
+    char leaf[RAMFS_MAX_NAME];
+    if (resolve(rel, 1, &parent, leaf, sizeof(leaf)) != 0)
+        return -1;
+    if (!leaf[0])
+        return -1;
+    int idx = find_child(parent, leaf);
+    if (idx < 0)
+        return -1;
+    /* Match POSIX: rmdir-vs-unlink semantics handled at higher layer. */
+    node_release(idx);
+    return 0;
+}
+
+/* M24: rmdir — directory must be empty. */
+static int ramfs_rmdir_op(const char *path)
+{
+    const char *rel = 0;
+    if (strip_tmp_prefix(path, &rel) != 0)
+        return -1;
+    if (!*rel || (rel[0] == '.' && rel[1] == 0))
+        return -1;
+    int parent = 0;
+    char leaf[RAMFS_MAX_NAME];
+    if (resolve(rel, 1, &parent, leaf, sizeof(leaf)) != 0)
+        return -1;
+    if (!leaf[0])
+        return -1;
+    int idx = find_child(parent, leaf);
+    if (idx < 0)
+        return -1;
+    if (!g_nodes[idx].is_dir)
+        return -1; /* not a directory */
+    if (node_child_count(idx) > 0)
+        return -1; /* not empty */
+    node_release(idx);
+    return 0;
+}
+
+/* M24: same-directory rename — old/new must share parent. */
+static int ramfs_rename_op(const char *oldpath, const char *newpath)
+{
+    const char *old_rel = 0, *new_rel = 0;
+    if (strip_tmp_prefix(oldpath, &old_rel) != 0)
+        return -1;
+    if (strip_tmp_prefix(newpath, &new_rel) != 0)
+        return -1;
+    if (!*old_rel || !*new_rel)
+        return -1;
+    int old_parent = 0, new_parent = 0;
+    char old_leaf[RAMFS_MAX_NAME], new_leaf[RAMFS_MAX_NAME];
+    if (resolve(old_rel, 1, &old_parent, old_leaf, sizeof(old_leaf)) != 0)
+        return -1;
+    if (resolve(new_rel, 1, &new_parent, new_leaf, sizeof(new_leaf)) != 0)
+        return -1;
+    if (!old_leaf[0] || !new_leaf[0])
+        return -1;
+    if (old_parent != new_parent)
+        return -1; /* same-dir only */
+    int idx = find_child(old_parent, old_leaf);
+    if (idx < 0)
+        return -1;
+    /* POSIX: if newpath exists and is a directory, old must also be one
+     * (or fail). We keep it minimal — refuse if target exists. */
+    if (find_child(new_parent, new_leaf) >= 0)
+        return -1;
+    memcpy(g_nodes[idx].name, new_leaf, RAMFS_MAX_NAME);
+    return 0;
+}
+
 static const struct vfs_ops g_ramfs_ops = {
     .open = ramfs_open,
     .read = ramfs_read,
@@ -371,6 +472,9 @@ static const struct vfs_ops g_ramfs_ops = {
     .getdents64 = ramfs_getdents64,
     .fstat = ramfs_fstat,
     .mkdir = ramfs_mkdir_op,
+    .unlink = ramfs_unlink_op,
+    .rmdir = ramfs_rmdir_op,
+    .rename = ramfs_rename_op,
 };
 
 const struct vfs_ops *ramfs_vfs_ops(void)

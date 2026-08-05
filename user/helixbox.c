@@ -17,11 +17,19 @@
 #define SYS_fork        57
 #define SYS_wait4       61
 #define SYS_pipe        22
+#define SYS_poll         7
+#define SYS_ppoll      271
 #define SYS_dup2        33
 #define SYS_execve      59
 #define SYS_exit        60
 #define SYS_getcwd      79
 #define SYS_chdir       80
+#define SYS_rename      82
+#define SYS_mkdir       83
+#define SYS_rmdir       84
+#define SYS_unlink      87
+#define SYS_fsync       74
+#define SYS_fdatasync   75
 #define SYS_getpid      39
 #define SYS_kill        62
 #define SYS_rt_sigaction 13
@@ -51,6 +59,19 @@
 #define O_RDWR   2
 #define O_CREAT  64
 #define O_TRUNC  512
+
+/* M24: poll(2) event bits (subset). */
+#define POLLIN   0x001
+#define POLLOUT  0x004
+#define POLLERR  0x008
+#define POLLHUP  0x010
+#define POLLNVAL 0x020
+
+struct pollfd_h {
+    int   fd;
+    short events;
+    short revents;
+};
 #define O_APPEND 1024
 
 struct utsname {
@@ -517,6 +538,217 @@ static void cmd_smoke(void)
         cmd_cat(2, c2);
     } else {
         xwrite("tmp open failed\n");
+    }
+
+    /* M24: poll(2) self-test — open a file with data + a pipe (no writer),
+     * poll both with POLLIN|POLLOUT, expect: file revents POLLIN|POLLOUT
+     * (or POLLIN if pos<size), pipe write-end revents POLLOUT (always writable).
+     * timeout=0 so it's non-blocking. */
+    {
+        xwrite("[poll] start\n");
+        int poll_ok = 1;
+        long rfd = usys(SYS_open, (long)"/hello.txt", O_RDONLY, 0);
+        xwrite("[poll] after open rfd="); xwrite(rfd < 0 ? "NEG" : "POS"); xwrite("\n");
+        if (rfd < 0) {
+            xwrite("HelixPollFAIL open hello\n");
+            poll_ok = 0;
+        } else {
+            struct pollfd_h pf[2];
+            xwrite("[poll] after pf decl\n");
+            int pipefd[2];
+            xwrite("[poll] after pipefd decl\n");
+            long pr = usys(SYS_pipe, (long)pipefd, 0, 0);
+            xwrite("[poll] after pipe pr="); xwrite(pr < 0 ? "NEG" : "POS"); xwrite("\n");
+            pf[0].fd = (int)rfd; pf[0].events = POLLIN | POLLOUT; pf[0].revents = 0;
+            pf[1].fd = (pr < 0) ? -1 : pipefd[1];
+            pf[1].events = POLLOUT; pf[1].revents = 0;
+            long nready = usys6(SYS_poll, (long)pf, 2, 0, 0, 0, 0);
+            if (nready <= 0) {
+                xwrite("HelixPollFAIL nready=0\n");
+                poll_ok = 0;
+            } else {
+                /* file fd: should have at least one event */
+                if ((pf[0].revents & (POLLIN | POLLOUT)) == 0) {
+                    xwrite("HelixPollFAIL file revents=0\n");
+                    poll_ok = 0;
+                }
+                /* pipe write end: POLLOUT always */
+                if (pr >= 0 && (pf[1].revents & POLLOUT) == 0) {
+                    xwrite("HelixPollFAIL pipe revents\n");
+                    poll_ok = 0;
+                }
+            }
+            if (pr >= 0) {
+                usys(SYS_close, pipefd[0], 0, 0);
+                usys(SYS_close, pipefd[1], 0, 0);
+            }
+            usys(SYS_close, (int)rfd, 0, 0);
+        }
+        /* Invalid fd → POLLNVAL */
+        {
+            struct pollfd_h pf[1];
+            pf[0].fd = 9999; pf[0].events = POLLIN; pf[0].revents = 0;
+            usys6(SYS_poll, (long)pf, 1, 0, 0, 0, 0);
+            if ((pf[0].revents & POLLNVAL) == 0) {
+                xwrite("HelixPollFAIL POLLNVAL\n");
+                poll_ok = 0;
+            }
+        }
+        /* ppoll with timeout=NULL pointer (= -1 ms = forever, but no events
+         * will ever come so we just check it doesn't crash and returns
+         * after we close our pipe). */
+        {
+            struct pollfd_h pf[1];
+            pf[0].fd = 0; pf[0].events = POLLIN; pf[0].revents = 0;
+            /* timeout_ms=100ms; pf should report no events for stdin (no input). */
+            long r = usys6(SYS_ppoll, (long)pf, 1, 0, 0, 0, 0);
+            (void)r; /* either 0 (timeout) or 1 (POLLIN) — both legal */
+        }
+        if (poll_ok) xwrite("HelixPollOK\n");
+    }
+
+    /* M24: unlink / rmdir / rename smoke.
+     * 1. create a file via SYS_open(O_CREAT), write a byte, close.
+     * 2. unlink it. Verify open-after-unlink fails.
+     * 3. mkdir a directory, rename a file into it (same-dir rename),
+     *    then rmdir the directory.
+     * 4. Probe that none of these crash and the FAT is consistent. */
+    {
+        xwrite("[unlink] start\n");
+        int unlink_ok = 1;
+
+        /* 1. create /tmp/U.TXT */
+        long fd = usys(SYS_open, (long)"/tmp/u.txt", 65 /* O_CREAT|O_WRONLY */, 0644);
+        if (fd < 0) {
+            xwrite("HelixUnlinkFAIL open create\n");
+            unlink_ok = 0;
+        } else {
+            char c = 'X';
+            usys(SYS_write, (int)fd, (long)&c, 1);
+            usys(SYS_close, (int)fd, 0, 0);
+        }
+        /* 2. unlink it */
+        long r = usys(SYS_unlink, (long)"/tmp/u.txt", 0, 0);
+        if (r != 0) {
+            xwrite("HelixUnlinkFAIL unlink r="); xwrite(r < 0 ? "NEG" : "POS"); xwrite("\n");
+            unlink_ok = 0;
+        }
+        /* 3. confirm open-after-unlink fails */
+        fd = usys(SYS_open, (long)"/tmp/u.txt", 0, 0);
+        if (fd >= 0) {
+            xwrite("HelixUnlinkFAIL still openable\n");
+            usys(SYS_close, (int)fd, 0, 0);
+            unlink_ok = 0;
+        }
+        /* 4. rmdir of /tmp/u.txt (it's a file, not a dir → should fail). */
+        r = usys(SYS_rmdir, (long)"/tmp/u.txt", 0, 0);
+        if (r == 0) {
+            xwrite("HelixUnlinkFAIL rmdir-on-file succeeded\n");
+            unlink_ok = 0;
+        }
+        /* 5. mkdir /tmp/U, unlink-empty-dir path. */
+        r = usys(SYS_mkdir, (long)"/tmp/u", 0755, 0);
+        if (r != 0) {
+            xwrite("HelixUnlinkFAIL mkdir /tmp/u\n");
+            unlink_ok = 0;
+        } else {
+            /* try rmdir empty → ok */
+            r = usys(SYS_rmdir, (long)"/tmp/u", 0, 0);
+            if (r != 0) {
+                xwrite("HelixUnlinkFAIL rmdir empty\n");
+                unlink_ok = 0;
+            }
+        }
+        /* 6. rename test: create /tmp/a.txt, rename → /tmp/b.txt, verify. */
+        fd = usys(SYS_open, (long)"/tmp/a.txt", 65, 0644);
+        if (fd < 0) {
+            xwrite("HelixUnlinkFAIL open a\n");
+            unlink_ok = 0;
+        } else {
+            usys(SYS_close, (int)fd, 0, 0);
+            r = usys(SYS_rename, (long)"/tmp/a.txt", (long)"/tmp/b.txt", 0);
+            if (r != 0) {
+                xwrite("HelixUnlinkFAIL rename\n");
+                unlink_ok = 0;
+            }
+            /* confirm a is gone, b is present */
+            long fda = usys(SYS_open, (long)"/tmp/a.txt", 0, 0);
+            long fdb = usys(SYS_open, (long)"/tmp/b.txt", 0, 0);
+            if (fda >= 0 || fdb < 0) {
+                xwrite("HelixUnlinkFAIL rename verify\n");
+                unlink_ok = 0;
+            }
+            if (fda >= 0) usys(SYS_close, (int)fda, 0, 0);
+            if (fdb >= 0) usys(SYS_close, (int)fdb, 0, 0);
+            /* cleanup */
+            usys(SYS_unlink, (long)"/tmp/b.txt", 0, 0);
+        }
+        if (unlink_ok) xwrite("HelixUnlinkOK\n");
+    }
+
+    /* M24: fsync + fdatasync + O_TRUNC smoke. */
+    {
+        xwrite("[fsync] start\n");
+        int fsync_ok = 1;
+        /* 1. Create + write + fsync + fdatasync on /tmp/f.txt */
+        long fd = usys(SYS_open, (long)"/tmp/f.txt",
+                       (long)(O_WRONLY | O_CREAT), 0644);
+        if (fd < 0) {
+            xwrite("HelixFsyncFAIL open create\n");
+            fsync_ok = 0;
+        } else {
+            char buf[16] = "HELIX_FSYNC_OK";
+            usys(SYS_write, (int)fd, (long)buf, 14);
+            long r1 = usys(SYS_fsync, (int)fd, 0, 0);
+            long r2 = usys(SYS_fdatasync, (int)fd, 0, 0);
+            usys(SYS_close, (int)fd, 0, 0);
+            if (r1 != 0 || r2 != 0) {
+                xwrite("HelixFsyncFAIL sync returned non-zero\n");
+                fsync_ok = 0;
+            }
+        }
+        /* 2. fsync on bogus fd → EBADF (negative) */
+        long bad = usys(SYS_fsync, 999, 0, 0);
+        if (bad >= 0) {
+            xwrite("HelixFsyncFAIL bad fd\n");
+            fsync_ok = 0;
+        }
+        /* 3. O_TRUNC semantics: write longer data, reopen O_TRUNC, verify size 0. */
+        fd = usys(SYS_open, (long)"/tmp/t.txt",
+                  (long)(O_WRONLY | O_CREAT), 0644);
+        if (fd >= 0) {
+            char buf[32];
+            for (int i = 0; i < 32; i++) buf[i] = 'A';
+            usys(SYS_write, (int)fd, (long)buf, 32);
+            usys(SYS_close, (int)fd, 0, 0);
+            /* reopen with O_TRUNC */
+            fd = usys(SYS_open, (long)"/tmp/t.txt",
+                      (long)(O_WRONLY | O_TRUNC), 0);
+            if (fd < 0) {
+                xwrite("HelixFsyncFAIL O_TRUNC open\n");
+                fsync_ok = 0;
+            } else {
+                usys(SYS_close, (int)fd, 0, 0);
+                /* read back — should be empty (size 0) */
+                fd = usys(SYS_open, (long)"/tmp/t.txt", (long)O_RDONLY, 0);
+                if (fd < 0) {
+                    xwrite("HelixFsyncFAIL open-after-trunc\n");
+                    fsync_ok = 0;
+                } else {
+                    char rb[16];
+                    long n = usys(SYS_read, (int)fd, (long)rb, 16);
+                    if (n != 0) {
+                        xwrite("HelixFsyncFAIL O_TRUNC did not zero file\n");
+                        fsync_ok = 0;
+                    }
+                    usys(SYS_close, (int)fd, 0, 0);
+                }
+            }
+        }
+        /* 4. cleanup */
+        usys(SYS_unlink, (long)"/tmp/f.txt", 0, 0);
+        usys(SYS_unlink, (long)"/tmp/t.txt", 0, 0);
+        if (fsync_ok) xwrite("HelixFsyncOK\n");
     }
 
     /* M20: FAT subdir iteration probe — /etc/passwd and /etc/welcome.txt

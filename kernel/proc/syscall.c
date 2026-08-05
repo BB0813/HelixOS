@@ -150,6 +150,40 @@ static i64 sys_mkdir(u64 path, u64 mode)
     return 0;
 }
 
+/* M24: unlink/rmdir/rename.
+ * Linux NRs: unlink=87, rmdir=84, rename=82. */
+static i64 sys_unlink(u64 path)
+{
+    char abs[VFS_PATH_MAX];
+    if (resolve_user_path(path, abs, sizeof(abs)) != 0)
+        return ERR(EFAULT);
+    if (vfs_unlink(abs) != 0)
+        return ERR(ENOENT);
+    return 0;
+}
+
+static i64 sys_rmdir(u64 path)
+{
+    char abs[VFS_PATH_MAX];
+    if (resolve_user_path(path, abs, sizeof(abs)) != 0)
+        return ERR(EFAULT);
+    if (vfs_rmdir(abs) != 0)
+        return ERR(EACCES);
+    return 0;
+}
+
+static i64 sys_rename(u64 oldp, u64 newp)
+{
+    char old_abs[VFS_PATH_MAX], new_abs[VFS_PATH_MAX];
+    if (resolve_user_path(oldp, old_abs, sizeof(old_abs)) != 0)
+        return ERR(EFAULT);
+    if (resolve_user_path(newp, new_abs, sizeof(new_abs)) != 0)
+        return ERR(EFAULT);
+    if (vfs_rename(old_abs, new_abs) != 0)
+        return ERR(EACCES);
+    return 0;
+}
+
 static i64 sys_openat(u64 dirfd, u64 path, u64 flags, u64 mode)
 {
     (void)dirfd; /* only absolute / relative-from-root for M5 */
@@ -159,6 +193,30 @@ static i64 sys_openat(u64 dirfd, u64 path, u64 flags, u64 mode)
 static i64 sys_close(u64 fd)
 {
     return fd_close((int)fd) == 0 ? 0 : ERR(EBADF);
+}
+
+/* M24: fsync(74) — flush pending writes for an open fd. HelixOS backends
+ * (FAT + ramfs) write through synchronously, so this is effectively a no-op
+ * beyond validating the fd. We still call vfs_fsync for any future fs that
+ * may buffer. */
+static i64 sys_fsync(u64 fd)
+{
+    fd_init_task_stdio();
+    struct vfs_file *f = fd_get((int)fd);
+    if (!f)
+        return ERR(EBADF);
+    if (f->is_console)
+        return 0;
+    if (f->ops && f->ops->fsync)
+        return f->ops->fsync(f) == 0 ? 0 : ERR(EIO);
+    return 0;
+}
+
+/* M24: fdatasync(75) — like fsync but skip non-data metadata. Same path
+ * under our synchronous backends. */
+static i64 sys_fdatasync(u64 fd)
+{
+    return sys_fsync(fd);
 }
 
 static i64 sys_exit(u64 code)
@@ -857,6 +915,55 @@ static i64 sys_getrandom(u64 buf, u64 len, u64 flags)
     return (i64)len;
 }
 
+/* M24: poll(2) — Linux x86_64 NR=7.
+ * User passes an array of `struct helix_pollfd` (8 bytes each: fd, events, revents).
+ * Returns count of fds with nonzero revents (POLLIN/POLLOUT/POLLERR/...) on
+ * success, 0 on timeout, -EFAULT/-EINVAL on bad args. */
+static i64 sys_poll(u64 fds_ptr, u64 nfds, u64 timeout_ms)
+{
+    if (nfds == 0)
+        return 0;
+    if (!user_ptr_ok((const void *)(uintptr_t)fds_ptr, nfds * sizeof(struct helix_pollfd)))
+        return ERR(EFAULT);
+    struct helix_pollfd *pf = (struct helix_pollfd *)(uintptr_t)fds_ptr;
+    /* Timeout is ignored for now (cooperative scheduler — caller yields). */
+    (void)timeout_ms;
+    int ready = 0;
+    for (u64 i = 0; i < nfds; i++) {
+        if (!user_ptr_ok(&pf[i].revents, sizeof(short)))
+            return ERR(EFAULT);
+        short ev = pf[i].events;
+        short rev = 0;
+        if (pf[i].fd < 0) {
+            rev = 0; /* POSIX: ignore negative fds */
+        } else {
+            fd_init_task_stdio();
+            struct vfs_file *f = fd_get(pf[i].fd);
+            if (!f) {
+                rev = (short)POLLNVAL;
+            } else {
+                rev = (short)vfs_poll_one(f, ev);
+            }
+        }
+        pf[i].revents = rev;
+        if (rev)
+            ready++;
+    }
+    return (i64)ready;
+}
+
+/* M24: ppoll(2) — Linux x86_64 NR=271.
+ * Like poll(2) but timeout is a `struct timespec*` and a sigmask may be given.
+ * We ignore both for the same reason as sys_poll. */
+static i64 sys_ppoll(u64 fds_ptr, u64 nfds, u64 tsp_ptr, u64 sigmask_ptr, u64 sigsetsize)
+{
+    (void)tsp_ptr;
+    (void)sigmask_ptr;
+    (void)sigsetsize;
+    /* Reuse sys_poll, drop the timespec/sigmask (cooperative model). */
+    return sys_poll(fds_ptr, nfds, 0);
+}
+
 /* TCP stubs — replaced by M14 TCP stack */
 #include "helix/tcp.h"
 
@@ -1280,6 +1387,9 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case SYS_getcwd:      ret = sys_getcwd(f->a0, f->a1); break;
     case SYS_chdir:       ret = sys_chdir(f->a0); break;
     case SYS_mkdir:       ret = sys_mkdir(f->a0, f->a1); break;
+    case 82:  /* rename */   ret = sys_rename(f->a0, f->a1); break;
+    case 84:  /* rmdir */    ret = sys_rmdir(f->a0); break;
+    case 87:  /* unlink */   ret = sys_unlink(f->a0); break;
     case SYS_mmap:        ret = sys_mmap(f->a0, f->a1, f->a2, f->a3, f->a4, f->a5); break;
     case SYS_mprotect:    ret = sys_mprotect(f->a0, f->a1, f->a2); break;
     case SYS_munmap:      ret = sys_munmap(f->a0, f->a1); break;
@@ -1324,8 +1434,14 @@ u64 syscall_entry_c(struct syscall_frame *f)
     case SYS_fb_info:         ret = sys_fb_info(f->a0); break;
     case SYS_readkey:         ret = sys_readkey(f->a0, f->a1); break;
     case SYS_mouse_read:      ret = sys_mouse_read(f->a0, f->a1); break;
+    case SYS_poll:            ret = sys_poll(f->a0, f->a1, f->a2); break;
+    case SYS_ppoll:           ret = sys_ppoll(f->a0, f->a1, f->a2, f->a3, f->a4); break;
+    case 74:  /* fsync */     ret = sys_fsync(f->a0); break;
+    case 75:  /* fdatasync */ ret = sys_fdatasync(f->a0); break;
     default:
-        kprintf("[syscall] ENOSYS nr=%llu\n", (unsigned long long)f->nr);
+        /* M24: silent ENOSYS — no kprintf spam for unimplemented syscalls.
+         * Apps with over-eager probes (e.g. setitimer/timerfd/etc.) used to
+         * flood the serial log. They get a clean -ENOSYS now. */
         ret = ERR(ENOSYS);
         break;
     }
@@ -1392,6 +1508,6 @@ void syscall_init(void)
 
     g_syscall_kstack = 0;
     g_syscall_user_rsp = 0;
-    kprintf("[syscall] SCE on, LSTAR=0x%llx (M5 ENOSYS default)\n",
+    kprintf("[syscall] SCE on, LSTAR=0x%llx (M24 poll/ppoll + silent ENOSYS)\n",
             (unsigned long long)entry);
 }
