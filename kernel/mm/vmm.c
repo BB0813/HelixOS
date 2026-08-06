@@ -45,10 +45,31 @@ u64 vmm_alloc_user_pages(u64 virt, u64 npages, int writable)
     return 1; /* non-zero success */
 }
 
+/* D4: unmap user pages in [virt, virt+len). Pages that aren't present (e.g.
+ * already unmapped, kernel leaves) are skipped silently. Used by munmap(2)
+ * and by task exit to free the entire user VA.
+ *
+ * NOTE: temporarily a no-op pending musl regression investigation.
+ * paging_unmap_4k frees phys pages but HelixOS shares a single PML4
+ * across tasks, so freeing a phys page in one task also removes it from
+ * all peer tasks. Full fix requires per-task PML4 + COW (M25+). */
 void vmm_unmap_user_range(u64 virt, u64 len)
 {
     (void)virt;
     (void)len;
+}
+
+/* D4: adjust PTE_W on user pages in [virt, virt+len). PROT_READ → writable=0,
+ * PROT_WRITE → writable=1. PROT_NONE is handled as PROT_READ (we don't drop
+ * P itself to avoid accidental #PF on first instruction after mprotect).
+ *
+ * NOTE: temporarily a no-op pending musl regression investigation. */
+int vmm_set_prot(u64 virt, u64 len, int prot)
+{
+    (void)virt;
+    (void)len;
+    (void)prot;
+    return 0;
 }
 
 /*

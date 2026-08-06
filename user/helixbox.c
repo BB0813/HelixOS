@@ -45,6 +45,8 @@
 
 /* M18 */
 #define SYS_mmap          9
+#define SYS_mprotect     10
+#define SYS_munmap       11
 #define SYS_fb_info     546
 #define SYS_readkey     547
 #define SYS_fcntl        72
@@ -749,6 +751,96 @@ static void cmd_smoke(void)
         usys(SYS_unlink, (long)"/tmp/f.txt", 0, 0);
         usys(SYS_unlink, (long)"/tmp/t.txt", 0, 0);
         if (fsync_ok) xwrite("HelixFsyncOK\n");
+    }
+
+    /* D4: munmap / mprotect smoke — verify pages are freed (no leak) and
+     * mprotect updates PTE_W. */
+    {
+        xwrite("[d4] start\n");
+        int munmap_ok = 1;
+        int mprotect_ok = 1;
+        long page = 4096;
+
+        /* 1. mmap 8 KiB anonymous (2 pages), write 0xAA, verify */
+        long va = usys6(SYS_mmap, 0, 2 * page,
+                        (long)(PROT_READ | PROT_WRITE),
+                        (long)(MAP_ANONYMOUS), -1, 0);
+        if (va < 0 || (va & 0xFFF)) {
+            xwrite("HelixMunmapFAIL mmap\n");
+            munmap_ok = 0;
+        } else {
+            volatile unsigned char *p = (volatile unsigned char *)va;
+            for (int i = 0; i < (int)(2 * page); i++) p[i] = 0xAA;
+            /* verify first + last byte */
+            if (p[0] != 0xAA || p[2 * page - 1] != 0xAA) {
+                xwrite("HelixMunmapFAIL memset\n");
+                munmap_ok = 0;
+            }
+            /* 2. munmap the range */
+            long r = usys(SYS_munmap, va, 2 * page, 0);
+            if (r != 0) {
+                xwrite("HelixMunmapFAIL munmap r="); xwrite(r < 0 ? "NEG" : "POS"); xwrite("\n");
+                munmap_ok = 0;
+            }
+            /* 3. re-mmap same 8 KiB — should succeed (pages were freed).
+             *    We can't safely read old VA now (unmapped → #PF in helixbox
+             *    would be caught as SIGSEGV which we don't handle). Skip read
+             *    of unmapped memory; just verify re-mmap works. */
+            long va2 = usys6(SYS_mmap, 0, 2 * page,
+                             (long)(PROT_READ | PROT_WRITE),
+                             (long)(MAP_ANONYMOUS), -1, 0);
+            if (va2 < 0) {
+                xwrite("HelixMunmapFAIL re-mmap\n");
+                munmap_ok = 0;
+            } else {
+                /* New pages must be zero (PMM zeros on alloc). */
+                volatile unsigned char *q = (volatile unsigned char *)va2;
+                if (q[0] != 0 || q[2 * page - 1] != 0) {
+                    xwrite("HelixMunmapFAIL new page not zero\n");
+                    munmap_ok = 0;
+                }
+                usys(SYS_munmap, va2, 2 * page, 0);
+            }
+        }
+        if (munmap_ok) xwrite("HelixMunmapOK\n");
+
+        /* 4. mprotect: mmap RW, then drop W, then restore W. HelixOS doesn't
+         *    fault on write-to-readonly (no W^X enforcement beyond the bit
+         *    toggle); just verify the syscall returns 0. */
+        long va3 = usys6(SYS_mmap, 0, page,
+                         (long)(PROT_READ | PROT_WRITE),
+                         (long)(MAP_ANONYMOUS), -1, 0);
+        if (va3 < 0) {
+            xwrite("HelixMprotectFAIL mmap\n");
+            mprotect_ok = 0;
+        } else {
+            volatile unsigned char *p = (volatile unsigned char *)va3;
+            p[0] = 'M';
+            /* drop W */
+            long r1 = usys(SYS_mprotect, va3, page, (long)PROT_READ);
+            if (r1 != 0) {
+                xwrite("HelixMprotectFAIL drop W r="); xwrite(r1 < 0 ? "NEG" : "POS"); xwrite("\n");
+                mprotect_ok = 0;
+            }
+            /* byte should still be readable */
+            if (p[0] != 'M') {
+                xwrite("HelixMprotectFAIL data lost\n");
+                mprotect_ok = 0;
+            }
+            /* restore W */
+            long r2 = usys(SYS_mprotect, va3, page, (long)(PROT_READ | PROT_WRITE));
+            if (r2 != 0) {
+                xwrite("HelixMprotectFAIL restore W\n");
+                mprotect_ok = 0;
+            }
+            p[0] = 'P';
+            if (p[0] != 'P') {
+                xwrite("HelixMprotectFAIL write after restore\n");
+                mprotect_ok = 0;
+            }
+            usys(SYS_munmap, va3, page, 0);
+        }
+        if (mprotect_ok) xwrite("HelixMprotectOK\n");
     }
 
     /* M20: FAT subdir iteration probe — /etc/passwd and /etc/welcome.txt

@@ -173,6 +173,112 @@ int paging_map_mmio(u64 phys, u64 len)
     return 0;
 }
 
+/* D4: count of present entries in a page table. Used to decide if an
+ * intermediate table is empty (all zero) and can be freed. */
+static int table_count_present(const u64 *tab)
+{
+    int n = 0;
+    for (int i = 0; i < 512; i++)
+        if (tab[i] & PTE_P)
+            n++;
+    return n;
+}
+
+/* D4: walk 4-level tables, drop user leaf at virt, free its phys page.
+ * Frees empty intermediate tables (PT/PD/PDPT) and clears their parent entries.
+ * Returns 0 on success (unmapped), -1 if virt not mapped or kernel leaf. */
+int paging_unmap_4k(u64 virt)
+{
+    if (!g_pml4)
+        return -1;
+    u64 i4 = (virt >> 39) & 0x1FF;
+    u64 i3 = (virt >> 30) & 0x1FF;
+    u64 i2 = (virt >> 21) & 0x1FF;
+    u64 i1 = (virt >> 12) & 0x1FF;
+
+    if (!(g_pml4[i4] & PTE_P))
+        return -1;
+    u64 *pdpt = (u64 *)(uintptr_t)(g_pml4[i4] & ~0xFFFull);
+
+    if (!(pdpt[i3] & PTE_P) || (pdpt[i3] & PTE_PS))
+        return -1;
+    u64 *pd = (u64 *)(uintptr_t)(pdpt[i3] & ~0xFFFull);
+
+    if (!(pd[i2] & PTE_P))
+        return -1;
+    if (pd[i2] & PTE_PS)
+        return -1; /* 2MiB large leaf; not handled here (user pages are 4K) */
+    u64 *pt = (u64 *)(uintptr_t)(pd[i2] & ~0xFFFull);
+
+    u64 pte = pt[i1];
+    if (!(pte & PTE_P))
+        return -1;
+    if (!(pte & PTE_U))
+        return -1; /* kernel leaf — never touch */
+
+    /* Free the underlying phys page. */
+    pmm_free_page(pte & 0x000FFFFFFFFFF000ull);
+
+    /* Clear PTE, invlpg. */
+    pt[i1] = 0;
+    paging_invlpg(virt);
+
+    /* Free empty PT? */
+    if (table_count_present(pt) == 0) {
+        pmm_free_page((u64)(uintptr_t)pt);
+        pd[i2] = 0;
+        paging_invlpg(virt & ~((1ull << 21) - 1));
+        /* Free empty PD? */
+        if (table_count_present(pd) == 0) {
+            pmm_free_page((u64)(uintptr_t)pd);
+            pdpt[i3] = 0;
+            paging_invlpg(virt & ~((1ull << 30) - 1));
+            /* Free empty PDPT? */
+            if (table_count_present(pdpt) == 0) {
+                pmm_free_page((u64)(uintptr_t)pdpt);
+                g_pml4[i4] = 0;
+                paging_invlpg(virt & ~((1ull << 39) - 1));
+            }
+        }
+    }
+    return 0;
+}
+
+/* D4: walk [virt, virt+len), setting/clearing PTE_W on user leaves.
+ * Returns 0 on success, -1 on any un-mapped range. PROT_NONE is mapped as
+ * P|U|W (we keep W to avoid #PF on first instruction — see D4 plan). */
+int paging_set_prot_range(u64 virt, u64 len, int writable)
+{
+    if (!g_pml4)
+        return -1;
+    u64 start = virt & ~0xFFFull;
+    u64 end = align_up_u64(virt + len, PAGE_SIZE);
+    for (u64 va = start; va < end; va += PAGE_SIZE) {
+        u64 i4 = (va >> 39) & 0x1FF;
+        u64 i3 = (va >> 30) & 0x1FF;
+        u64 i2 = (va >> 21) & 0x1FF;
+        u64 i1 = (va >> 12) & 0x1FF;
+        if (!(g_pml4[i4] & PTE_P))
+            return -1;
+        u64 *pdpt = (u64 *)(uintptr_t)(g_pml4[i4] & ~0xFFFull);
+        if (!(pdpt[i3] & PTE_P) || (pdpt[i3] & PTE_PS))
+            return -1;
+        u64 *pd = (u64 *)(uintptr_t)(pdpt[i3] & ~0xFFFull);
+        if (!(pd[i2] & PTE_P) || (pd[i2] & PTE_PS))
+            return -1;
+        u64 *pt = (u64 *)(uintptr_t)(pd[i2] & ~0xFFFull);
+        u64 pte = pt[i1];
+        if (!(pte & PTE_P) || !(pte & PTE_U))
+            return -1;
+        if (writable)
+            pt[i1] = pte | PTE_W;
+        else
+            pt[i1] = pte & ~PTE_W;
+        paging_invlpg(va);
+    }
+    return 0;
+}
+
 /* Walk existing identity map and set U on leaves covering [va,va+len). */
 int paging_set_user_range(u64 va, u64 len)
 {

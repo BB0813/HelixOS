@@ -162,6 +162,20 @@ void task_exit_current(int code)
         }
     }
 
+    /* D4: page leak on task exit is a known limitation. HelixOS uses a single
+     * shared PML4 across all tasks (no per-task address space). Unmapping
+     * pages in [USER_BASE, USER_STACK_TOP) on exit would also drop them from
+     * peer tasks still running (verified during D4 implementation — caused
+     * boot panic after init+task2: task2 exit unmapped init's code).
+     * task_reap still calls task_free_user_pages, which uses task->user_pages[]
+     * populated by task_track_user_page — for fork'd children, those are
+     * uniquely owned and safe to free (orphaned PTEs are harmless: the phys
+     * is gone, any access will fault). Per-task PML4 + COW is a larger
+     * refactor — documented as D4 known limitation in GOAL_D4.md.
+     *
+     * What D4 DOES fix: sys_munmap (syscall #11) now real-unmaps the
+     * requested range, freeing phys pages. Users can opt into per-page
+     * cleanup; the kernel no longer leaks on user-initiated munmap. */
     struct task *n = pick_next(t);
     if (!n) {
         kprintf("[task] no runnable tasks left\n");

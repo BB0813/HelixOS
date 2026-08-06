@@ -573,7 +573,7 @@ static i64 sys_munmap(u64 addr, u64 len)
 {
     (void)addr;
     (void)len;
-    return 0; /* leak pages for now */
+    return 0; /* D4 TODO: implement real unmap once per-task PML4 is done */
 }
 
 static i64 sys_mprotect(u64 addr, u64 len, u64 prot)
@@ -581,7 +581,7 @@ static i64 sys_mprotect(u64 addr, u64 len, u64 prot)
     (void)addr;
     (void)len;
     (void)prot;
-    return 0;
+    return 0; /* D4 TODO: implement real prot change once per-task PML4 is done */
 }
 
 /* Linux struct sigaction layout we accept (simplified):

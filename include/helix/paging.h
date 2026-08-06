@@ -22,3 +22,10 @@ int  paging_map_mmio(u64 phys, u64 len);
 int  paging_set_user_range(u64 va, u64 len);
 /* Walk current CR3: phys of page containing virt, or 0 if unmapped. */
 u64  paging_virt_to_phys(u64 virt);
+/* D4: unmap a single 4K page. Returns 0 if it was a user leaf (and frees the
+ * underlying phys page via pmm_free_page); -1 otherwise. Kernel leaves are
+ * never freed. */
+int  paging_unmap_4k(u64 virt);
+/* D4: walk current CR3 and adjust W bit on user leaves in [virt, virt+len).
+ * PROT_NONE keeps P|U; PROT_READ drops W; PROT_READ|PROT_WRITE sets W. */
+int  paging_set_prot_range(u64 virt, u64 len, int writable);
