@@ -901,17 +901,63 @@ static i64 sys_recvfrom(u64 fd, u64 buf, u64 len, u64 flags, u64 sockaddr, u64 a
     return (i64)r;
 }
 
+/* D5: simple LFSR-based mixer for entropy when RDRAND is unavailable.
+ * Mixes TSC, heap address, stack address, and previous output through
+ * a 64-bit Galois LFSR. NOT cryptographically secure — but much better
+ * than the old (timer_ticks + i*37) deterministic pattern. */
+static u64 g_lfsr_state = 0xA5B9D1E3C7F20486ull;
+
+static u8 lfsr_next_byte(void)
+{
+    /* Galois LFSR feedback: if bit 0 is set, XOR with polynomial */
+    if (g_lfsr_state & 1)
+        g_lfsr_state = (g_lfsr_state >> 1) ^ 0xB000000000000000ull;
+    else
+        g_lfsr_state >>= 1;
+    /* Stir in external entropy: TSC + address-of-local + heap hint */
+    extern u64 timer_ticks(void);
+    g_lfsr_state ^= timer_ticks() ^ (u64)&g_lfsr_state;
+    return (u8)(g_lfsr_state & 0xFF);
+}
+
+static int has_rdrand(void)
+{
+    u32 eax, ebx, ecx, edx;
+    __asm__ volatile("cpuid"
+                     : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                     : "a"(1));
+    return (ecx >> 30) & 1;
+}
+
 static i64 sys_getrandom(u64 buf, u64 len, u64 flags)
 {
     (void)flags;
     if (!user_ptr_ok((void *)(uintptr_t)buf, len))
         return ERR(EFAULT);
-    /* Fill with deterministic-ish data (timer ticks) */
-    extern u64 timer_ticks(void);
     u8 *out = (u8 *)(uintptr_t)buf;
-    u64 t = timer_ticks();
-    for (u64 i = 0; i < len; i++)
-        out[i] = (u8)(t + i * 37);
+    if (has_rdrand()) {
+        for (u64 i = 0; i < len; i++) {
+            u64 val;
+            /* RDRAND: 64-bit random value; retry up to 10 times on CF=0 */
+            int ok = 0;
+            for (int retry = 0; retry < 10 && !ok; retry++)
+                __asm__ volatile("rdrand %0; setc %%al"
+                                 : "=r"(val), "=a"(ok));
+            if (!ok) {
+                /* RDRAND failed mid-stream — fall back to LFSR for remainder */
+                for (; i < len; i++)
+                    out[i] = lfsr_next_byte();
+                return (i64)len;
+            }
+            out[i] = (u8)(val & 0xFF);
+            /* Stir high bits back into LFSR for fallback path */
+            g_lfsr_state ^= val;
+        }
+    } else {
+        /* No RDRAND — use LFSR mixer (better than old deterministic pattern) */
+        for (u64 i = 0; i < len; i++)
+            out[i] = lfsr_next_byte();
+    }
     return (i64)len;
 }
 

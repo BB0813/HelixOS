@@ -90,9 +90,48 @@ void kfree(void *ptr)
 
     struct freenode *n = (struct freenode *)hdr;
     n->size = sz;
+    n->next = 0;
+
+    /* D5: full coalesce — merge with next AND previous physical neighbors.
+     * The heap is small (8 MiB) so linear free-list scans are acceptable. */
+
+    /* --- merge with NEXT physical neighbor if free --- */
+    struct freenode *next_phys = (struct freenode *)((u8 *)n + n->size);
+    if ((u8 *)next_phys < g_heap_base + g_heap_size) {
+        /* Walk free list to see if next_phys is free */
+        struct freenode *fp = g_free;
+        while (fp) {
+            if (fp == next_phys) {
+                /* next_phys is free — absorb it */
+                n->size += fp->size;
+                /* Remove fp from free list */
+                struct freenode **pp = &g_free;
+                while (*pp && *pp != fp)
+                    pp = &(*pp)->next;
+                if (*pp == fp)
+                    *pp = fp->next;
+                break;
+            }
+            fp = fp->next;
+        }
+    }
+
+    /* --- merge with PREVIOUS physical neighbor if free --- */
+    if ((u8 *)n > g_heap_base) {
+        /* Walk free list looking for a block that ends exactly at n */
+        struct freenode *fp = g_free;
+        while (fp) {
+            if ((u8 *)fp + fp->size == (u8 *)n) {
+                /* prev_phys is free — absorb n into it */
+                fp->size += n->size;
+                /* n is now absorbed; don't add n to free list */
+                return;
+            }
+            fp = fp->next;
+        }
+    }
+
+    /* No backward merge — add n to free list head */
     n->next = g_free;
     g_free = n;
-
-    /* Simple one-pass coalescing with next physical neighbor if free */
-    /* (kept minimal for M1; full coalesce later) */
 }

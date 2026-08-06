@@ -47,6 +47,7 @@
 #define SYS_mmap          9
 #define SYS_mprotect     10
 #define SYS_munmap       11
+#define SYS_getrandom   318
 #define SYS_fb_info     546
 #define SYS_readkey     547
 #define SYS_fcntl        72
@@ -841,6 +842,59 @@ static void cmd_smoke(void)
             usys(SYS_munmap, va3, page, 0);
         }
         if (mprotect_ok) xwrite("HelixMprotectOK\n");
+    }
+
+    /* D5: getrandom smoke — verify RDRAND/LFSR mixer produces non-trivial output.
+     * HelixOS QEMU may not have RDRAND; LFSR mixer fallback is tested instead. */
+    {
+        xwrite("[d5] start\n");
+        int rnd_ok = 1;
+        unsigned char rnd_buf[64];
+        long r = usys(SYS_getrandom, (long)rnd_buf, 64, 0);
+        if (r != 64) {
+            xwrite("HelixGetrandomFAIL len\n");
+            rnd_ok = 0;
+        } else {
+            /* Check non-zero (at least some bytes should differ from 0) */
+            int all_zero = 1;
+            int all_same = 1;
+            for (int i = 1; i < 64; i++) {
+                if (rnd_buf[i] != 0) all_zero = 0;
+                if (rnd_buf[i] != rnd_buf[0]) all_same = 0;
+            }
+            if (all_zero) {
+                xwrite("HelixGetrandomFAIL all-zero\n");
+                rnd_ok = 0;
+            } else if (all_same) {
+                xwrite("HelixGetrandomFAIL all-same\n");
+                rnd_ok = 0;
+            }
+            /* Two calls should differ (entropy variation) */
+            unsigned char rnd_buf2[64];
+            usys(SYS_getrandom, (long)rnd_buf2, 64, 0);
+            int identical = 1;
+            for (int i = 0; i < 64; i++) {
+                if (rnd_buf[i] != rnd_buf2[i]) { identical = 0; break; }
+            }
+            if (identical) {
+                xwrite("HelixGetrandomFAIL identical\n");
+                rnd_ok = 0;
+            }
+        }
+        if (rnd_ok) xwrite("HelixGetrandomOK\n");
+    }
+
+    /* D5: heap coalesce smoke — exercise kmalloc/kfree churn via open/close.
+     * Each open() allocates a vfs_file struct from the kernel heap; each close
+     * frees it. Rapid open/close cycles stress the free-list coalesce. */
+    {
+        int malloc_ok = 1;
+        for (int i = 0; i < 64; i++) {
+            long fd = usys(SYS_open, (long)"/hello.txt", 0, 0);
+            if (fd < 0) { malloc_ok = 0; break; }
+            usys(SYS_close, (int)fd, 0, 0);
+        }
+        if (malloc_ok) xwrite("HelixMallocOK\n");
     }
 
     /* M20: FAT subdir iteration probe — /etc/passwd and /etc/welcome.txt
