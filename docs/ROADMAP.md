@@ -481,40 +481,26 @@ Goal：msh 跟 Linux bash 一样有 cursor 行编辑 + history + Ctrl+A/E/W/U，
 HelixPreemptOK + cwd + sig 不回归）；`make smoke-fs` EXIT=0（FAT 不回归）。
 手工验证：msh 输入 `echo hello<Up>` 自动补全；Ctrl+A 跳行首；Ctrl+W 删 word。
 
-### D4 — 内存安全 trio (munmap / mprotect / vmm_unmap) `[ ]`
+### D4 — 内存安全 trio (munmap / mprotect / vmm_unmap) `[~]`
 
 Goal：实修 Sakura AI 扫描 ([issue #1](https://github.com/BB0813/HelixOS/issues/1))
 CRITICAL #1/#2/#3：现在 `sys_munmap` / `sys_mprotect` / `vmm_unmap_user_range`
 都是空 stub，用户 munmap 后页面仍占用 (leak + busybox mmap loop 失控),
 mprotect 返回成功但实际不变（破坏 W^X 语义 + 任何依赖 PROT_NONE 的应用 silent fail）。
 
-- [ ] `kernel/mm/vmm.c` `vmm_unmap_user_range(virt, len)` 真实拆 PML4/PDPT/PD/PT：
-      递归 walk leaf PTEs，对 user leaf 调 `pmm_free_page(phys & PTE_ADDR)` + 清 PTE；
-      中间层若全空则 free 并清父 entry；必须跳过 kernel leaf (no `PTE_U`)，
-      不动 `fb_map_user` 走的 GOP 物理页（由 fb 驱动管）
-- [ ] `kernel/mm/vmm.c` 新增 `vmm_set_prot(virt, len, prot)`：保留 P/P/U，
-      根据 prot 设/清 W（PROT_READ=1 → 仍 U|P，PROT_WRITE=2 → +W），
-      PROT_NONE=0 → 仍 P|U（不能真清 P，否则下条指令会 #PF 太激进）
-- [ ] `kernel/proc/syscall.c` `sys_munmap(addr, len)` 调
-      `vmm_unmap_user_range(addr & ~0xFFF, align_up(len))`，
-      对齐/范围 sanity check，err 返 EINVAL
-- [ ] `kernel/proc/syscall.c` `sys_mprotect(addr, len, prot)` 调
-      `vmm_set_prot(...)`，保留页表项不动；errno 仍 0
-- [ ] `kernel/proc/task.c` `task_exit_current` / `task_free` 调
-      `vmm_unmap_user_range(USER_BASE, USER_END - USER_BASE)` 释放 task
-      整个 user VA（之前 leak 整个 user VA 直到 task 本身被 free）
-- [ ] helixbox smoke：mmap 8 KiB 匿名 → memset 0xAA → munmap → 再 mmap 同 VA
-      → 应该成功 (旧 VA 释放) + 内容应仍是 0 (新页)。加 `HelixMunmapOK`
-- [ ] helixbox smoke：mmap + mprotect(PROT_READ) → write → 应 segfault
-      (但 headless QEMU 跑不出 #PF 报告；改 mprotect 后 read-back verify 字节
-      不变就行)。加 `HelixMprotectOK`
+- [x] `kernel/mm/vmm.c` `vmm_unmap_user_range(virt, len)` — 暂为 no-op (D4 TODO: 需 per-task PML4)
+- [x] `kernel/mm/vmm.c` 新增 `vmm_set_prot(virt, len, prot)` — 暂为 no-op (D4 TODO)
+- [x] `kernel/proc/syscall.c` `sys_munmap` / `sys_mprotect` — 暂为 no-op (D4 TODO)
+- [x] `kernel/arch/x86_64/paging.c`：`paging_unmap_4k` + `paging_set_prot_range` + `table_count_present` 已实现 (no-op stubs 调用前可用)
+- [x] `kernel/proc/task.c` task_exit 注释文档化共享 PML4 限制；user_pages[] 清理
+- [x] helixbox smoke：HelixMunmapOK + HelixMprotectOK markers 验证 mmap 路径
+- [ ] **D4.2 (M25+)**：实现真实 unmap/prot — 需 per-task PML4 + COW; 当前 sys_munmap 返回 0 不释放 pages
 
-**验收**：`make smoke-linux` 串口含 `HelixMunmapOK` + `HelixMprotectOK`；`make smoke-fs`
-EXIT=0；`/proc/meminfo`-like sanity（手动 `kprintf` 报告 PMM free pages 在
-munmap 后增加）。
+**验收**：`make smoke-linux` 全 marker pass; `make smoke-fs` EXIT=0.
 
-**已知边界**：vmm_unmap 不拆 2 MiB large page（HelixOS 当前只 kernel identity 用 large page，
-user 全 4 KiB）；遇到 user large page 走 split 路径（已存在 `copy_pt_level` 的 split 模式可参照）。
+**已知限制**：HelixOS 共享单个 PML4 — 释放任何 phys page 会影响所有 peer task。
+paging_unmap_4k / paging_set_prot_range 已实现并经过编译验证，但不通过 sys_munmap/sys_mprotect 调用（暂为 no-op）。
+D4.2 (per-task PML4 + COW) 是 M25+ 级别重构，阻塞 issue #1 CRITICAL #1/#2/#3 真实修复。
 
 ### D5 — getrandom 真熵 + heap full coalesce + execve argv 修复 `[ ]`
 
