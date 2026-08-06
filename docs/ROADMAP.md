@@ -481,6 +481,79 @@ Goal：msh 跟 Linux bash 一样有 cursor 行编辑 + history + Ctrl+A/E/W/U，
 HelixPreemptOK + cwd + sig 不回归）；`make smoke-fs` EXIT=0（FAT 不回归）。
 手工验证：msh 输入 `echo hello<Up>` 自动补全；Ctrl+A 跳行首；Ctrl+W 删 word。
 
+### D4 — 内存安全 trio (munmap / mprotect / vmm_unmap) `[ ]`
+
+Goal：实修 Sakura AI 扫描 ([issue #1](https://github.com/BB0813/HelixOS/issues/1))
+CRITICAL #1/#2/#3：现在 `sys_munmap` / `sys_mprotect` / `vmm_unmap_user_range`
+都是空 stub，用户 munmap 后页面仍占用 (leak + busybox mmap loop 失控),
+mprotect 返回成功但实际不变（破坏 W^X 语义 + 任何依赖 PROT_NONE 的应用 silent fail）。
+
+- [ ] `kernel/mm/vmm.c` `vmm_unmap_user_range(virt, len)` 真实拆 PML4/PDPT/PD/PT：
+      递归 walk leaf PTEs，对 user leaf 调 `pmm_free_page(phys & PTE_ADDR)` + 清 PTE；
+      中间层若全空则 free 并清父 entry；必须跳过 kernel leaf (no `PTE_U`)，
+      不动 `fb_map_user` 走的 GOP 物理页（由 fb 驱动管）
+- [ ] `kernel/mm/vmm.c` 新增 `vmm_set_prot(virt, len, prot)`：保留 P/P/U，
+      根据 prot 设/清 W（PROT_READ=1 → 仍 U|P，PROT_WRITE=2 → +W），
+      PROT_NONE=0 → 仍 P|U（不能真清 P，否则下条指令会 #PF 太激进）
+- [ ] `kernel/proc/syscall.c` `sys_munmap(addr, len)` 调
+      `vmm_unmap_user_range(addr & ~0xFFF, align_up(len))`，
+      对齐/范围 sanity check，err 返 EINVAL
+- [ ] `kernel/proc/syscall.c` `sys_mprotect(addr, len, prot)` 调
+      `vmm_set_prot(...)`，保留页表项不动；errno 仍 0
+- [ ] `kernel/proc/task.c` `task_exit_current` / `task_free` 调
+      `vmm_unmap_user_range(USER_BASE, USER_END - USER_BASE)` 释放 task
+      整个 user VA（之前 leak 整个 user VA 直到 task 本身被 free）
+- [ ] helixbox smoke：mmap 8 KiB 匿名 → memset 0xAA → munmap → 再 mmap 同 VA
+      → 应该成功 (旧 VA 释放) + 内容应仍是 0 (新页)。加 `HelixMunmapOK`
+- [ ] helixbox smoke：mmap + mprotect(PROT_READ) → write → 应 segfault
+      (但 headless QEMU 跑不出 #PF 报告；改 mprotect 后 read-back verify 字节
+      不变就行)。加 `HelixMprotectOK`
+
+**验收**：`make smoke-linux` 串口含 `HelixMunmapOK` + `HelixMprotectOK`；`make smoke-fs`
+EXIT=0；`/proc/meminfo`-like sanity（手动 `kprintf` 报告 PMM free pages 在
+munmap 后增加）。
+
+**已知边界**：vmm_unmap 不拆 2 MiB large page（HelixOS 当前只 kernel identity 用 large page，
+user 全 4 KiB）；遇到 user large page 走 split 路径（已存在 `copy_pt_level` 的 split 模式可参照）。
+
+### D5 — getrandom 真熵 + heap full coalesce + execve argv 修复 `[ ]`
+
+Goal：剩余 CRITICAL #4 (getrandom deterministic) + 部分 MAJOR（heap 外碎片 /
+execve argv leak）。这一批不阻塞功能但影响可信度。
+
+- [ ] `kernel/proc/syscall.c` `sys_getrandom`：检测 CPUID `RDRAND` (leaf 1 ECX bit 30)
+      走硬件 RDRAND；若不可用 fallback 到 LFSR mixer over TSC + 堆地址 + stack 字节
+      (收集 64 字节后 fold + siphash-style mix)。明确注释：headless QEMU 无
+      RDRAND 仍 deterministic-ish；helixbox 加 `HelixGetrandomOK` (verify buffer
+      非全 0 + non-pattern)
+- [ ] `kernel/mm/heap.c` `kfree` full coalesce：双向 — 当前块 + 上一块 (通过
+      `(hdr-1)->size` 后退) + 下一块 (通过 `(hdr + sz/sizeof(u64))->size` 前进)；
+      合并后写新 size 到结果块头。验证：连续 kfree 三个相邻块 → 再 kmalloc
+      大块应一次成功 (HelixMallocOK smoke)
+- [ ] `kernel/proc/syscall.c` `sys_execve` argv leak：失败路径 kfree 所有
+      argv 副本 (含 argv[0])；成功路径由新 exec'd task 自管，旧 task user VA
+      销毁时统一释放（与 D4 vmm_unmap_user_range 联动）
+- [ ] （可选） `kernel/net/tcp.h` `txq[4] → txq[16]`（MAJOR #2）；HelixOS 当前
+      smoke 不阻塞但 helixbox 跑大文件 cat 应该够用
+
+**验收**：helixbox 加 `HelixGetrandomOK` + `HelixMallocOK`；`make smoke-linux`
+EXIT=0；`make smoke-fs` EXIT=0；grep `\[malloc\]` log 应能看到合并后大块申请一次成功。
+
+**已知边界**：RDRAND 在老 QEMU (<6.x) + TCG 可能 disabled；fallback mixer 在
+单任务 boot 早期仍欠熵，但比纯 `timer_ticks + i*37` 强。
+
+### D6 — UI/UX 清理 + 文档 `[ ]`
+
+- [ ] （MINOR） `[fat]` / `[net]` / `[tcp]` kprintf 加 ANSI color prefix，headless
+      下用 `isatty(serial)` 判断（永远 false → 不变色不破坏 log）
+- [ ] （MINOR） 集中地址窗口常量到 `include/helix/mm_layout.h`（USER_BASE、
+      USER_STACK_TOP、USER_LOW window、ld-helix 0x50000000 等），删 syscall.h
+      内的 inline 定义
+- [ ] （MINOR） syscall.c 每个入口一次性 `fd_init_task_stdio()`；当前每个
+      handler 重复调，改为 `syscall_entry_c` 入口处一次
+- [ ] GOAL_D4.md / GOAL_D5.md / GOAL_D6.md 创建
+- [ ] ROADMAP / ARCHITECTURE / SYSCALLS / README 加 D4–D6 节
+
 ---
 
 ## M20 — VFS ext + 用户态补全 `[x]`

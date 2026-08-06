@@ -23,7 +23,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M20, M21–M24 + 路线 D 已完成**（2026-08-05；路线 A→B→C→D 全部完成）
+**M0–M24 + 路线 A→B→C→D (D1–D3) 已完成**（2026-08-05）；路线 D 续 D4–D6 **计划中**（issue [#1](https://github.com/BB0813/HelixOS/issues/1) Sakura 扫描 CRITICAL 修复）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -129,7 +129,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M24** + **路线 D**（已完成，路线 A→B→C→D 全部完成）。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M24** + **路线 D**（D1–D3 已完成；D4–D6 **计划中** — 修 issue [#1](https://github.com/BB0813/HelixOS/issues/1) Sakura 扫描的 4 个 CRITICAL）。
 
 ## 许可
 
