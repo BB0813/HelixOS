@@ -1,19 +1,7 @@
 #pragma once
 
 #include "helix/types.h"
-
-/* User VA policy:
- * - Low classic Linux loads (0x400000+) share CR3 with kernel identity; those
- *   pages get U=1 when loading ET_EXEC like BusyBox.
- * - Helix freestanding tests use [USER_BASE, USER_STACK_TOP).
- * - user_ptr_ok accepts either region.
- */
-#define USER_BASE       0x0000000040000000ULL
-#define USER_STACK_TOP  0x0000000044000000ULL  /* 64 MiB Helix user window */
-#define USER_STACK_SIZE (256u * 1024u)
-#define USER_LOW_MIN    0x0000000000400000ULL  /* classic ET_EXEC min we care about */
-/* BusyBox musl static: text@0x400000 data@0x711fe0 memsz 2MiB → BSS to ~0x912000 */
-#define USER_LOW_MAX    0x0000000000A00000ULL  /* 10MiB covers BB data+BSS + small brk */
+#include "helix/mm_layout.h"
 
 /* Linux x86_64 syscall numbers (subset). */
 #define SYS_read              0

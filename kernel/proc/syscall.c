@@ -77,7 +77,7 @@ static i64 sys_write(u64 fd, u64 buf, u64 count)
         return 0;
     if (!user_ptr_ok((const void *)(uintptr_t)buf, count))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
@@ -95,7 +95,7 @@ static i64 sys_read(u64 fd, u64 buf, u64 count)
         return 0;
     if (!user_ptr_ok((void *)(uintptr_t)buf, count))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
@@ -131,7 +131,7 @@ static i64 sys_open(u64 path, u64 flags, u64 mode)
     int fl = (int)flags;
     if (vfs_open_flags(abs, fl, &f) != 0)
         return ERR(ENOENT);
-    fd_init_task_stdio();
+
     int fd = fd_install(f);
     if (fd < 0) {
         vfs_close(f);
@@ -201,7 +201,7 @@ static i64 sys_close(u64 fd)
  * may buffer. */
 static i64 sys_fsync(u64 fd)
 {
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
@@ -296,7 +296,7 @@ static i64 sys_getdents64(u64 fd, u64 buf, u64 count)
 {
     if (!user_ptr_ok((void *)(uintptr_t)buf, count))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
@@ -307,7 +307,7 @@ static i64 sys_fstat(u64 fd, u64 statbuf)
 {
     if (!user_ptr_ok((void *)(uintptr_t)statbuf, 144))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
@@ -334,7 +334,7 @@ static i64 sys_newfstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags)
 static i64 sys_ioctl(u64 fd, u64 req, u64 arg)
 {
     (void)arg;
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
@@ -347,7 +347,7 @@ static i64 sys_ioctl(u64 fd, u64 req, u64 arg)
 
 static i64 sys_fcntl(u64 fd, u64 cmd, u64 arg)
 {
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
@@ -362,7 +362,7 @@ static i64 sys_fcntl(u64 fd, u64 cmd, u64 arg)
 
 static i64 sys_dup2(u64 oldfd, u64 newfd)
 {
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)oldfd);
     if (!f)
         return ERR(EBADF);
@@ -539,7 +539,7 @@ static i64 sys_pipe(u64 pipefd_ptr)
         if (w) vfs_close(w);
         return ERR(ENOMEM);
     }
-    fd_init_task_stdio();
+
     int rf = fd_install(r);
     int wf = fd_install(w);
     if (rf < 0 || wf < 0) {
@@ -755,7 +755,7 @@ static i64 sys_socket(u64 domain, u64 type, u64 protocol)
     (void)protocol;
     if (domain != 2 /* AF_INET */)
         return ERR(EOPNOTSUPP);
-    fd_init_task_stdio();
+
 
     if (type == 1 /* SOCK_STREAM */) {
         /* M14: TCP socket — allocate via tcp.c */
@@ -785,7 +785,7 @@ static i64 sys_socket(u64 domain, u64 type, u64 protocol)
     memset(f, 0, sizeof(*f));
     f->is_socket = 1;
     f->fs_priv   = s;
-    fd_init_task_stdio();
+
     int fd = fd_install(f);
     if (fd < 0) {
         kfree(f);
@@ -801,7 +801,7 @@ static i64 sys_bind(u64 fd, u64 sockaddr, u64 addrlen)
     (void)addrlen;
     if (!user_ptr_ok((const void *)(uintptr_t)sockaddr, 16))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
@@ -831,7 +831,7 @@ static i64 sys_sendto(u64 fd, u64 buf, u64 len, u64 flags, u64 sockaddr, u64 add
         return ERR(EFAULT);
     if (!user_ptr_ok((const void *)(uintptr_t)sockaddr, 16))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
@@ -859,7 +859,7 @@ static i64 sys_recvfrom(u64 fd, u64 buf, u64 len, u64 flags, u64 sockaddr, u64 a
         return ERR(EFAULT);
     if (sockaddr != 0 && !user_ptr_ok((void *)(uintptr_t)sockaddr, 16))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
@@ -983,7 +983,7 @@ static i64 sys_poll(u64 fds_ptr, u64 nfds, u64 timeout_ms)
         if (pf[i].fd < 0) {
             rev = 0; /* POSIX: ignore negative fds */
         } else {
-            fd_init_task_stdio();
+        
             struct vfs_file *f = fd_get(pf[i].fd);
             if (!f) {
                 rev = (short)POLLNVAL;
@@ -1018,7 +1018,7 @@ static i64 sys_connect(u64 fd, u64 addr, u64 addrlen)
     (void)addrlen;
     if (!user_ptr_ok((const void *)(uintptr_t)addr, 16))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || f->is_socket != 2)
         return ERR(ENOTSOCK);
@@ -1039,7 +1039,7 @@ static i64 sys_accept(u64 fd, u64 addr, u64 addrlen)
     (void)addrlen;
     if (addr != 0 && !user_ptr_ok((void *)(uintptr_t)addr, 16))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || f->is_socket != 2)
         return ERR(ENOTSOCK);
@@ -1071,7 +1071,7 @@ static i64 sys_accept(u64 fd, u64 addr, u64 addrlen)
 static i64 sys_listen(u64 fd, u64 backlog)
 {
     (void)backlog;
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || f->is_socket != 2)
         return ERR(ENOTSOCK);
@@ -1095,7 +1095,7 @@ static i64 sys_sendmsg(u64 fd, u64 msg, u64 flags)
     (void)flags;
     if (!user_ptr_ok((void *)(uintptr_t)msg, 56))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
@@ -1147,7 +1147,7 @@ static i64 sys_recvmsg(u64 fd, u64 msg, u64 flags)
     (void)flags;
     if (!user_ptr_ok((void *)(uintptr_t)msg, 56))
         return ERR(EFAULT);
-    fd_init_task_stdio();
+
     struct vfs_file *f = fd_get((int)fd);
     if (!f || !f->is_socket)
         return ERR(ENOTSOCK);
@@ -1387,6 +1387,10 @@ static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
 
 u64 syscall_entry_c(struct syscall_frame *f)
 {
+    /* D6: initialize stdio fds once per syscall entry instead of in every handler.
+     * Idempotent (checks fd[0..2] before writing). */
+    fd_init_task_stdio();
+
     struct task *t = task_current();
     if (t) {
         t->regs.rip = f->user_rip;
@@ -1531,7 +1535,7 @@ u64 syscall_entry_c(struct syscall_frame *f)
         f->rbx = t->regs.rbx;
         g_syscall_kstack = t->kernel_stack_top;
         ret = (i64)t->regs.rax;
-        fd_init_task_stdio();
+    
     }
     return (u64)ret;
 }
