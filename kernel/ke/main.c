@@ -141,8 +141,13 @@ void kernel_early_main(struct helix_boot_info *info)
         }
     }
 
-    /* M3/M4 cooperative demo; on completion hook runs M5 helixbox smoke. */
+    /* M3/M4 cooperative demo; on completion hook runs M5 helixbox smoke.
+     * smoke-shell builds with HELIX_SHELL_ONLY to boot straight into the
+     * kernel shell (shell_poll only runs in the idle loop, so the long
+     * userland chain would starve the script's TCP-fed commands). */
+#ifndef HELIX_SHELL_ONLY
     userland_start();
+#endif
 
     kernel_idle_loop();
 }

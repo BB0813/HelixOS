@@ -80,6 +80,12 @@ ifdef HELIX_M1_TEST_PF
   CFLAGS += -DHELIX_M1_TEST_PF
 endif
 
+# smoke-shell boots straight into the kernel shell (skips the long userland
+# smoke chain) so shell_poll can service the script's TCP-fed commands in time.
+ifdef HELIX_SHELL_ONLY
+  CFLAGS += -DHELIX_SHELL_ONLY
+endif
+
 .PHONY: all clean esp run user check-deps dirs help fetch-busybox \
 	smoke smoke-user smoke-fs smoke-linux smoke-dyn smoke-shell smoke-panic \
 	smoke-net smoke-fb
@@ -200,8 +206,13 @@ smoke-musl: esp
 fetch-busybox:
 	@bash $(ROOT)/scripts/fetch-busybox.sh
 
-smoke-shell: esp
+smoke-shell:
+	$(RM_RF) $(BUILD)/kernel/ke $(OUT)/BOOTX64.EFI
+	$(MAKE) all HELIX_SHELL_ONLY=1
+	$(MAKE) esp
 	@bash $(ROOT)/scripts/smoke-shell.sh
+	$(RM_RF) $(BUILD)/kernel/ke $(OUT)/BOOTX64.EFI
+	$(MAKE) all
 
 smoke-panic:
 	$(RM_RF) $(BUILD)/kernel/ke $(OUT)/BOOTX64.EFI
