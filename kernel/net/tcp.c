@@ -264,13 +264,13 @@ int tcp_send_data(struct helix_tcp_sock *ts, const void *data, u32 len) {
     if (len > 1400) len = 1400;
 
     /* M17: queue to TXQ before sending */
-    if (ts->tx_count < 4) {
+    if (ts->tx_count < 16) {
         struct tcp_tx_seg *tx = &ts->txq[ts->tx_tail];
         tx->seq = ts->snd_nxt;
         tx->len = len;
         memcpy(tx->data, data, len);
         tx->retries = 0;
-        ts->tx_tail = (ts->tx_tail + 1) % 4;
+        ts->tx_tail = (ts->tx_tail + 1) % 16;
         ts->tx_count++;
     }
 
@@ -462,7 +462,7 @@ void tcp_input(u32 src_be, u32 dst_be_ignored, const u8 *tcp_pkt, u32 tcp_len) {
             while (ts->tx_count > 0) {
                 struct tcp_tx_seg *oldest = &ts->txq[ts->tx_head];
                 if (oldest->seq + oldest->len <= ts->snd_una) {
-                    ts->tx_head = (ts->tx_head + 1) % 4;
+                    ts->tx_head = (ts->tx_head + 1) % 16;
                     ts->tx_count--;
                 } else break;
             }
@@ -549,7 +549,7 @@ void tcp_retransmit(void) {
         /* Resend all unacked segments */
         kprintf("[tcp] retransmit socket %d (tx_count=%u)\n", i, (unsigned)ts->tx_count);
         int dropped = 0;
-        for (u16 idx = ts->tx_head; idx != ts->tx_tail; idx = (idx + 1) % 4) {
+        for (u16 idx = ts->tx_head; idx != ts->tx_tail; idx = (idx + 1) % 16) {
             struct tcp_tx_seg *tx = &ts->txq[idx];
             tx->retries++;
             if (tx->retries > TCP_RETRANS_MAX_RETRIES) {

@@ -66,7 +66,7 @@ struct helix_tcp_sock {
     u16  rx_head, rx_tail, rx_count;
 
     /* TX retransmission queue */
-    struct tcp_tx_seg txq[4];
+    struct tcp_tx_seg txq[16];
     u16  tx_head, tx_tail, tx_count;
 
     /* Accept backlog (for LISTEN sockets) */
