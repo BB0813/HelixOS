@@ -11,6 +11,7 @@
 static u64 g_mapped_ceiling;
 static u64 g_cr3;
 static u64 *g_pml4;
+static u64 g_kernel_pml4;   /* boot identity template; never holds user pages */
 
 static u64 *alloc_table(void)
 {
@@ -62,6 +63,7 @@ int paging_init_identity(u64 phys_ceiling)
     }
 
     g_cr3 = (u64)(uintptr_t)g_pml4;
+    g_kernel_pml4 = g_cr3;
     __asm__ volatile("mov %0, %%cr3" : : "r"(g_cr3) : "memory");
 
     g_mapped_ceiling = ceil;
@@ -85,6 +87,23 @@ u64 paging_mapped_ceiling(void)
 u64 paging_cr3(void)
 {
     return g_cr3;
+}
+
+u64 paging_kernel_pml4(void)
+{
+    return g_kernel_pml4;
+}
+
+/* D4.2: switch the active address space. Updates the module-global g_pml4 so every
+ * paging_* walk targets the new space, then reloads CR3 (full TLB flush). The kernel
+ * identity map is shared by every per-task PML4, so kernel code keeps running. */
+void paging_set_pml4(u64 pml4)
+{
+    if (!pml4)
+        return;
+    g_pml4 = (u64 *)(uintptr_t)pml4;
+    g_cr3 = pml4;
+    __asm__ volatile("mov %0, %%cr3" : : "r"(pml4) : "memory");
 }
 
 /* Walk/create 4-level tables and install a 4K PTE. Kernel identity stays on 2MiB.
@@ -216,8 +235,8 @@ int paging_unmap_4k(u64 virt)
     if (!(pte & PTE_U))
         return -1; /* kernel leaf — never touch */
 
-    /* Free the underlying phys page. */
-    pmm_free_page(pte & 0x000FFFFFFFFFF000ull);
+    /* Release the underlying phys page (refcounted: shared pages stay put). */
+    pmm_page_deref(pte & 0x000FFFFFFFFFF000ull);
 
     /* Clear PTE, invlpg. */
     pt[i1] = 0;

@@ -21,3 +21,8 @@ int elf_load_image(const void *image, u64 size, struct elf_load_info *out);
 /* Load dynamic: main + interpreter from VFS path in PT_INTERP.
  * Loads main at preferred/PIE base, interp at separate base; out->entry = interp entry. */
 int elf_load_dynamic(const void *main_img, u64 main_size, struct elf_load_info *out);
+
+/* D4.2: zero the module-static page dedup bitmaps (high/low/interp). Called at
+ * the start of every load so a fresh per-task address space isn't polluted by a
+ * previous ELF's "already mapped" entries. */
+void elf_load_bitmaps_reset(void);

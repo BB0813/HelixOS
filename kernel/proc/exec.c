@@ -183,33 +183,65 @@ struct task *task_exec_elf(const char *name, const void *elf_img, u64 elf_size,
                            const char *const argv[])
 {
     struct elf_load_info info;
+    /* Create the task first: task_create allocates its per-task PML4, which is
+     * the address space the ELF is loaded into. */
+    struct task *t = task_create(name, 0, 0);
+    if (!t)
+        return 0;
+
+    /* Load into t's pml4. Kernel keeps running because the identity map is
+     * shared by every per-task PML4. Restore the caller's pml4 when done. */
+    u64 saved = paging_cr3();
+    paging_set_pml4(t->pml4);
+
     int rc = elf_load_dynamic(elf_img, elf_size, &info);
+    if (rc != 0)
+        rc = elf_load_image(elf_img, elf_size, &info);
     if (rc != 0) {
-        if (elf_load_image(elf_img, elf_size, &info) != 0)
-            return 0;
+        kprintf("[exec] elf_load failed\n");
+        paging_set_pml4(saved);
+        vmm_destroy_address_space(t->pml4);
+        pmm_free_page(t->kernel_stack);
+        t->kernel_stack = 0;
+        t->state = TASK_UNUSED;
+        return 0;
     }
 
     u64 stack_base, stack_top;
     if (info.load_base >= USER_BASE || info.interp_base >= 0x50000000ull) {
         static int gen;
         stack_base = USER_STACK_TOP - USER_STACK_SIZE * (u64)((gen++ % 3) + 1);
-        if (!vmm_alloc_user_pages(stack_base, USER_STACK_SIZE / PAGE_SIZE, 1))
+        if (!vmm_alloc_user_pages(stack_base, USER_STACK_SIZE / PAGE_SIZE, 1)) {
+            paging_set_pml4(saved);
+            vmm_destroy_address_space(t->pml4);
+            pmm_free_page(t->kernel_stack);
+            t->kernel_stack = 0;
+            t->state = TASK_UNUSED;
             return 0;
+        }
         stack_top = stack_base + USER_STACK_SIZE;
     } else {
         stack_top = 0x3FFFF000ull;
         stack_base = stack_top - USER_STACK_SIZE;
-        if (map_stack(stack_base, stack_top) != 0)
+        if (map_stack(stack_base, stack_top) != 0) {
+            paging_set_pml4(saved);
+            vmm_destroy_address_space(t->pml4);
+            pmm_free_page(t->kernel_stack);
+            t->kernel_stack = 0;
+            t->state = TASK_UNUSED;
             return 0;
+        }
     }
 
     const char *execfn = (argv && argv[0]) ? argv[0] : name;
     u64 sp = setup_user_stack(stack_top, argv, &info, execfn);
-    struct task *t = task_create(name, info.entry, sp);
-    if (!t)
-        return 0;
+    t->regs.rip = info.entry;
+    t->regs.rsp = sp;
+    t->user_stack_top = stack_top;
     t->brk_start = align_up_u64(info.load_end, PAGE_SIZE);
     t->brk_curr = t->brk_start;
+
+    paging_set_pml4(saved);
     return t;
 }
 

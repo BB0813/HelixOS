@@ -17,6 +17,7 @@ extern void user_enter_asm(u64 entry, u64 user_rsp);
 static struct task g_tasks[TASK_MAX];
 static struct task *g_current;
 static int g_next_pid = 1;
+static u64 g_active_pml4;   /* physical address of the PML4 currently in CR3 */
 static void (*g_exit_all_hook)(void);
 
 void task_set_exit_all_hook(void (*hook)(void))
@@ -29,6 +30,7 @@ void task_init(void)
     memset(g_tasks, 0, sizeof(g_tasks));
     g_current = 0;
     g_next_pid = 1;
+    g_active_pml4 = paging_cr3(); /* reflect whatever CR3 currently holds */
 }
 
 struct task *task_current(void)
@@ -98,6 +100,15 @@ struct task *task_create(const char *name, u64 entry, u64 user_sp)
     t->kernel_stack = kphys;
     t->kernel_stack_top = kphys + PAGE_SIZE;
 
+    /* D4.2: each task owns a per-task PML4 (kernel identity leaves shared).
+     * Loaded by task_activate() the first time this task runs. */
+    t->pml4 = vmm_clone_kernel_pml4();
+    if (!t->pml4) {
+        pmm_free_page(kphys);
+        t->state = TASK_UNUSED;
+        return 0;
+    }
+
     t->user_stack_top = user_sp;
     t->regs.rip = entry;
     t->regs.rsp = user_sp;
@@ -111,6 +122,21 @@ struct task *task_create(const char *name, u64 entry, u64 user_sp)
             (unsigned long long)user_sp,
             (unsigned long long)t->kernel_stack_top);
     return t;
+}
+
+/* D4.2: make `n` the running task. Loads its per-task PML4 (if it differs from
+ * the active one) so kernel walks and user mappings target the right address
+ * space, then points the syscall kstack + TSS rsp0 at n's kernel stack. */
+static void task_activate(struct task *n)
+{
+    if (!n)
+        return;
+    if (n->pml4 && n->pml4 != g_active_pml4) {
+        paging_set_pml4(n->pml4);
+        g_active_pml4 = n->pml4;
+    }
+    g_syscall_kstack = n->kernel_stack_top;
+    gdt_set_tss_rsp0(n->kernel_stack_top);
 }
 
 static struct task *pick_next(struct task *except)
@@ -162,28 +188,24 @@ void task_exit_current(int code)
         }
     }
 
-    /* D4: page leak on task exit is a known limitation. HelixOS uses a single
-     * shared PML4 across all tasks (no per-task address space). Unmapping
-     * pages in [USER_BASE, USER_STACK_TOP) on exit would also drop them from
-     * peer tasks still running (verified during D4 implementation — caused
-     * boot panic after init+task2: task2 exit unmapped init's code).
-     * task_reap still calls task_free_user_pages, which uses task->user_pages[]
-     * populated by task_track_user_page — for fork'd children, those are
-     * uniquely owned and safe to free (orphaned PTEs are harmless: the phys
-     * is gone, any access will fault). Per-task PML4 + COW is a larger
-     * refactor — documented as D4 known limitation in GOAL_D4.md.
-     *
-     * What D4 DOES fix: sys_munmap (syscall #11) now real-unmaps the
-     * requested range, freeing phys pages. Users can opt into per-page
-     * cleanup; the kernel no longer leaks on user-initiated munmap. */
+    /* D4.2: tear down t's address space only after CR3 has moved onto a safe
+     * pml4 (the kernel identity map is shared, so we keep running; the tables
+     * being freed are t's per-task ones). If no peer remains, fall back to the
+     * kernel template first. */
     struct task *n = pick_next(t);
     if (!n) {
         kprintf("[task] no runnable tasks left\n");
+        if (g_active_pml4 != paging_kernel_pml4()) {
+            paging_set_pml4(paging_kernel_pml4());
+            g_active_pml4 = paging_kernel_pml4();
+        }
+        vmm_destroy_address_space(t->pml4);
+        t->pml4 = 0;
+        t->user_page_count = 0;
         g_current = 0;
         if (g_exit_all_hook) {
             void (*h)(void) = g_exit_all_hook;
             g_exit_all_hook = 0;
-            /* Jump to kernel idle stack path: just call idle */
             h();
         }
         extern void kernel_idle_loop(void);
@@ -191,8 +213,10 @@ void task_exit_current(int code)
     }
     n->state = TASK_RUNNING;
     g_current = n;
-    g_syscall_kstack = n->kernel_stack_top;
-    gdt_set_tss_rsp0(n->kernel_stack_top);
+    task_activate(n);
+    vmm_destroy_address_space(t->pml4);
+    t->pml4 = 0;
+    t->user_page_count = 0;
 }
 
 void task_yield(void)
@@ -208,8 +232,7 @@ void task_yield(void)
     /* user rip/rsp/rflags already snapshotted in syscall_entry_c before dispatch */
     n->state = TASK_RUNNING;
     g_current = n;
-    g_syscall_kstack = n->kernel_stack_top;
-    gdt_set_tss_rsp0(n->kernel_stack_top);
+    task_activate(n);
     kprintf("[sched] yield %d -> %d\n", t->pid, n->pid);
 }
 
@@ -220,8 +243,7 @@ void task_start_user(void)
         panic("task_start_user: no task");
     t->state = TASK_RUNNING;
     g_current = t;
-    g_syscall_kstack = t->kernel_stack_top;
-    gdt_set_tss_rsp0(t->kernel_stack_top);
+    task_activate(t);
     fd_init_task_stdio();
 
     kprintf("[task] enter user pid=%d entry=0x%llx\n",
@@ -238,8 +260,7 @@ void sched_switch_to(struct task *next)
         g_current->state = TASK_READY;
     next->state = TASK_RUNNING;
     g_current = next;
-    g_syscall_kstack = next->kernel_stack_top;
-    gdt_set_tss_rsp0(next->kernel_stack_top);
+    task_activate(next);
 }
 
 void task_track_user_page(struct task *t, u64 vaddr, u64 phys)
@@ -280,6 +301,7 @@ struct task *task_fork(struct task *parent)
     /* sig_blocked + sighand already copied via memcpy */
     child->user_page_count = 0; /* will be populated by vmm_copy */
     memset(child->user_pages, 0, sizeof(child->user_pages));
+    child->pml4 = 0; /* overwritten below with the child's own copy */
 
     /* Kernel stack: allocate new, copy parent's kernel stack content */
     u64 kphys = pmm_alloc_page();
@@ -301,21 +323,18 @@ struct task *task_fork(struct task *parent)
         }
     }
 
-    /* Duplicate user page tables: child gets own PML4 with copied user pages */
-    u64 parent_pml4 = paging_cr3();
-    u64 child_pml4 = vmm_copy_user_page_tables(parent_pml4, child);
+    /* Duplicate user page tables: child gets a fresh PML4 with copied user
+     * pages. parent_pml4 = the parent's own (per-task) address space. */
+    u64 child_pml4 = vmm_copy_user_page_tables(paging_cr3(), child);
     if (!child_pml4) {
         pmm_free_page(kphys);
         child->state = TASK_UNUSED;
         return 0;
     }
 
-    /* Load child's CR3, flush TLB, then restore parent's CR3 */
-    __asm__ volatile(
-        "mov %0, %%cr3\n\t"
-        "mov %1, %%cr3\n\t"
-        : : "r"(child_pml4), "r"(parent_pml4) : "memory"
-    );
+    /* D4.2: child's PML4 is loaded by task_activate() the first time the child
+     * is scheduled. The parent's CR3 stays untouched — no transient CR3 dance. */
+    child->pml4 = child_pml4;
 
     kprintf("[task] fork pid=%d -> child pid=%d (rip=0x%llx)\n",
             parent->pid, child->pid,
@@ -349,9 +368,8 @@ void task_reap(struct task *t)
 {
     if (!t)
         return;
-    /* User pages + kernel stack already freed on exit.
-     * FDs were closed in task_exit_current. */
-    task_free_user_pages(t);
+    /* Address space + user pages destroyed in task_exit_current (t->pml4 = 0,
+     * user_page_count = 0); only the kernel stack is freed here. */
     if (t->kernel_stack)
         pmm_free_page(t->kernel_stack);
     t->kernel_stack = 0;

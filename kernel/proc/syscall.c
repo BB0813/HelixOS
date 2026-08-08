@@ -571,17 +571,41 @@ static i64 sys_stat_path(u64 path, u64 statbuf)
 
 static i64 sys_munmap(u64 addr, u64 len)
 {
-    (void)addr;
-    (void)len;
-    return 0; /* D4 TODO: implement real unmap once per-task PML4 is done */
+    if (len == 0 || (addr & (PAGE_SIZE - 1)))
+        return ERR(EINVAL);
+    u64 start = addr;
+    u64 end = addr + len;
+    if (end < start)
+        return ERR(EINVAL);
+    int ok_range =
+        (start >= USER_BASE && end <= USER_STACK_TOP) ||
+        (start >= USER_LOW_MIN && end <= USER_LOW_MAX) ||
+        (start >= 0x50000000ull && end <= 0x51000000ull) ||
+        (start >= 0x400000ull && end <= 0x01000000ull);
+    if (!ok_range)
+        return ERR(EINVAL);
+    vmm_unmap_user_range(start, end - start);
+    return 0;
 }
 
 static i64 sys_mprotect(u64 addr, u64 len, u64 prot)
 {
-    (void)addr;
-    (void)len;
-    (void)prot;
-    return 0; /* D4 TODO: implement real prot change once per-task PML4 is done */
+    if (len == 0 || (addr & (PAGE_SIZE - 1)))
+        return ERR(EINVAL);
+    u64 start = addr;
+    u64 end = addr + len;
+    if (end < start)
+        return ERR(EINVAL);
+    int ok_range =
+        (start >= USER_BASE && end <= USER_STACK_TOP) ||
+        (start >= USER_LOW_MIN && end <= USER_LOW_MAX) ||
+        (start >= 0x50000000ull && end <= 0x51000000ull) ||
+        (start >= 0x400000ull && end <= 0x01000000ull);
+    if (!ok_range)
+        return ERR(EINVAL);
+    if (vmm_set_prot(start, end - start, (int)prot) != 0)
+        return ERR(ENOMEM);
+    return 0;
 }
 
 /* Linux struct sigaction layout we accept (simplified):
@@ -1253,11 +1277,21 @@ static i64 sys_fork(void)
     return (i64)child->pid;
 }
 
-/* M10: execve — replace current process image with ELF from path */
+/* M10: execve — replace current process image with ELF from path.
+ * D4.2: builds a fresh per-task PML4, loads the ELF into it, switches CR3, then
+ * destroys the OLD address space. argv is copied from the old user space before
+ * the switch so it stays readable regardless of which space becomes active. */
 #include "helix/exec.h"
+static void exec_free_argv(char *argv[], int argc)
+{
+    for (int i = 1; i < argc; i++)
+        if (argv[i] && argv[i] != argv[0])
+            kfree(argv[i]);
+}
+
 static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
 {
-    (void)argv_ptr; (void)envp_ptr;
+    (void)envp_ptr;
     struct task *t = task_current();
     if (!t)
         return ERR(ENOMEM);
@@ -1269,10 +1303,7 @@ static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
 
     kprintf("[exec] pid=%d execve path=%s\n", t->pid, path);
 
-    /* Free current user pages */
-    task_free_user_pages(t);
-
-    /* Load ELF from path */
+    /* Read ELF into a kernel buffer (no user-space access). */
     void *buf = 0;
     u64 sz = 0;
     struct vfs_file *f = 0;
@@ -1298,43 +1329,11 @@ static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
     }
     vfs_close(f);
 
-    /* Load ELF and set up new user space */
-    struct elf_load_info info;
-    int rc = elf_load_dynamic(buf, sz, &info);
-    if (rc != 0) {
-        if (elf_load_image(buf, sz, &info) != 0) {
-            kfree(buf);
-            return ERR(ENOEXEC);
-        }
-    }
-    kfree(buf);
-
-    /* Set up new stack */
-    u64 stack_base, stack_top;
-    if (info.load_base >= USER_BASE || info.interp_base >= 0x50000000ull) {
-        stack_base = USER_STACK_TOP - USER_STACK_SIZE;
-        if (!vmm_alloc_user_pages(stack_base, USER_STACK_SIZE / PAGE_SIZE, 1))
-            return ERR(ENOMEM);
-        stack_top = stack_base + USER_STACK_SIZE;
-    } else {
-        stack_top = 0x3FFFF000ull;
-        stack_base = stack_top - USER_STACK_SIZE;
-        /* Map stack pages */
-        for (u64 va = stack_base; va < stack_top; va += PAGE_SIZE) {
-            u64 phys = pmm_alloc_page();
-            if (!phys)
-                return ERR(ENOMEM);
-            memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
-            paging_map_4k(va, phys, (1ull) | (1ull << 1) | (1ull << 2));
-            task_track_user_page(t, va, phys);
-        }
-    }
-
-    /* Build argv from user pointer (copy argv strings from user space) */
+    /* Copy argv strings from the OLD user space while CR3 still points at it.
+     * argv[0] is the resolved path (kernel stack buffer). */
     char *argv[16];
-    int argc = 0;
-    argv[0] = path; /* argv[0] = program path (like execve spec) */
-    argc = 1;
+    int argc = 1;
+    argv[0] = path;
     if (argv_ptr) {
         const u64 *uargv = (const u64 *)(uintptr_t)argv_ptr;
         for (int i = 1; i < 15; i++) {
@@ -1359,30 +1358,81 @@ static i64 sys_execve(u64 pathname, u64 argv_ptr, u64 envp_ptr)
     }
     argv[argc] = 0;
 
-    /* Set up user stack with auxv + argv */
+    /* Build the fresh address space and switch to it. */
+    u64 new_pml4 = vmm_clone_kernel_pml4();
+    if (!new_pml4) {
+        kfree(buf);
+        exec_free_argv(argv, argc);
+        return ERR(ENOMEM);
+    }
+    u64 old_pml4 = t->pml4;
+    paging_set_pml4(new_pml4);
+
+    struct elf_load_info info;
+    int rc = elf_load_dynamic(buf, sz, &info);
+    if (rc != 0)
+        rc = elf_load_image(buf, sz, &info);
+    if (rc != 0) {
+        kprintf("[exec] elf_load failed\n");
+        paging_set_pml4(old_pml4);
+        vmm_destroy_address_space(new_pml4);
+        kfree(buf);
+        exec_free_argv(argv, argc);
+        return ERR(ENOEXEC);
+    }
+    kfree(buf);
+
+    /* Set up new stack inside new_pml4 (g_pml4 == new_pml4 here). */
+    u64 stack_base, stack_top;
+    if (info.load_base >= USER_BASE || info.interp_base >= 0x50000000ull) {
+        stack_base = USER_STACK_TOP - USER_STACK_SIZE;
+        if (!vmm_alloc_user_pages(stack_base, USER_STACK_SIZE / PAGE_SIZE, 1)) {
+            paging_set_pml4(old_pml4);
+            vmm_destroy_address_space(new_pml4);
+            exec_free_argv(argv, argc);
+            return ERR(ENOMEM);
+        }
+        stack_top = stack_base + USER_STACK_SIZE;
+    } else {
+        stack_top = 0x3FFFF000ull;
+        stack_base = stack_top - USER_STACK_SIZE;
+        for (u64 va = stack_base; va < stack_top; va += PAGE_SIZE) {
+            u64 phys = pmm_alloc_page();
+            if (!phys) {
+                paging_set_pml4(old_pml4);
+                vmm_destroy_address_space(new_pml4);
+                exec_free_argv(argv, argc);
+                return ERR(ENOMEM);
+            }
+            memset((void *)(uintptr_t)phys, 0, PAGE_SIZE);
+            paging_map_4k(va, phys, (1ull) | (1ull << 1) | (1ull << 2));
+        }
+    }
+
     u64 sp = setup_user_stack(stack_top, (const char *const *)argv, &info, path);
+    exec_free_argv(argv, argc);
 
-    /* Free argv copies */
-    for (int i = 1; i < argc; i++)
-        if (argv[i] && argv[i] != path)
-            kfree(argv[i]);
-
-    /* Reset task registers */
+    /* Commit: task now runs on new_pml4. CR3 is already there. */
     t->regs.rip = info.entry;
     t->regs.rsp = sp;
     t->regs.rax = 0;
     t->regs.rflags = 0x200;
+    t->user_stack_top = stack_top;
     t->brk_start = align_up_u64(info.load_end, PAGE_SIZE);
     t->brk_curr = t->brk_start;
-    /* Copy path into name */
     size_t nlen = strlen(path);
     if (nlen >= TASK_NAME_MAX) nlen = TASK_NAME_MAX - 1;
     memcpy(t->name, path, nlen);
     t->name[nlen] = 0;
 
-    /* We need to force-return to user mode with new regs.
-     * Modify the syscall frame so that iret/sysret goes to new entry. */
-    return 0; /* will be handled by syscall frame override below */
+    /* Tear down the old address space. CR3 is already on new_pml4, so freeing
+     * the old tables (and their user leaves) can't fault the running kernel. */
+    t->pml4 = new_pml4;
+    t->user_page_count = 0;
+    if (old_pml4 && old_pml4 != paging_kernel_pml4())
+        vmm_destroy_address_space(old_pml4);
+
+    return 0; /* frame override below returns to new entry on new_pml4 */
 }
 
 u64 syscall_entry_c(struct syscall_frame *f)

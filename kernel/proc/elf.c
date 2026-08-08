@@ -49,19 +49,23 @@ struct elf64_phdr {
 #define PTE_W (1ull << 1)
 #define PTE_U (1ull << 2)
 
+/* D4.2: dedup bitmaps for ELF segment pages. Each exec maps into a fresh
+ * per-task address space, so the bitmaps must not carry entries from a previous
+ * ELF — elf_load_bitmaps_reset() zeroes all three at the start of every load. */
+enum { HIGH_BITMAP_BYTES   = 0x4000000ull / PAGE_SIZE / 8 };  /* USER_BASE..TOP */
+static u8 g_high_mapped[HIGH_BITMAP_BYTES];
+
 static int ensure_user_page_high(u64 virt)
 {
-    enum { WIN = 0x4000000ull / PAGE_SIZE / 8 };
-    static u8 mapped[WIN];
     if (virt < USER_BASE || virt >= USER_STACK_TOP)
         return -1;
     u64 off = virt - USER_BASE;
     u64 pg = off >> PAGE_SHIFT;
     u64 bi = pg >> 3;
     u8  mask = (u8)(1u << (pg & 7));
-    if (bi >= sizeof(mapped))
+    if (bi >= sizeof(g_high_mapped))
         return -1;
-    if (mapped[bi] & mask)
+    if (g_high_mapped[bi] & mask)
         return 0;
     u64 phys = pmm_alloc_page();
     if (!phys)
@@ -71,7 +75,7 @@ static int ensure_user_page_high(u64 virt)
         pmm_free_page(phys);
         return -1;
     }
-    mapped[bi] |= mask;
+    g_high_mapped[bi] |= mask;
     return 0;
 }
 
@@ -82,9 +86,14 @@ enum { LOW_SPAN = 0x900000ull };
 enum { LOW_BASE = 0x100000ull };
 static u8 g_low_mapped[LOW_SPAN / PAGE_SIZE / 8];
 
-static void low_user_map_reset(void)
+enum { INTERP_BITMAP_BYTES = 0x1000000ull / PAGE_SIZE / 8 };  /* 0x50000000..+16M */
+static u8 g_interp_mapped[INTERP_BITMAP_BYTES];
+
+void elf_load_bitmaps_reset(void)
 {
+    memset(g_high_mapped, 0, sizeof(g_high_mapped));
     memset(g_low_mapped, 0, sizeof(g_low_mapped));
+    memset(g_interp_mapped, 0, sizeof(g_interp_mapped));
 }
 
 static int ensure_user_page_low(u64 virt)
@@ -118,14 +127,13 @@ static int ensure_user_page(u64 virt)
      * and TOP is 0x44000000 — 0x50000000 is OUTSIDE. Map as high-style anon. */
     if (virt >= 0x50000000ull && virt < 0x51000000ull) {
         /* separate small bitmap for interp window 16MiB */
-        static u8 im[0x1000000ull / PAGE_SIZE / 8];
         u64 off = virt - 0x50000000ull;
         u64 pg = off >> PAGE_SHIFT;
         u64 bi = pg >> 3;
         u8 mask = (u8)(1u << (pg & 7));
-        if (bi >= sizeof(im))
+        if (bi >= sizeof(g_interp_mapped))
             return -1;
-        if (im[bi] & mask)
+        if (g_interp_mapped[bi] & mask)
             return 0;
         u64 phys = pmm_alloc_page();
         if (!phys)
@@ -135,7 +143,7 @@ static int ensure_user_page(u64 virt)
             pmm_free_page(phys);
             return -1;
         }
-        im[bi] |= mask;
+        g_interp_mapped[bi] |= mask;
         return 0;
     }
     return -1;
@@ -299,7 +307,7 @@ int elf_load_image(const void *image, u64 size, struct elf_load_info *out)
         kprintf("[elf] image has PT_INTERP — use dynamic loader\n");
         return -1;
     }
-    low_user_map_reset();
+    elf_load_bitmaps_reset();
     u64 base, end, phdr_va;
     if (load_loads(image, size, eh, 0, &base, &end, &phdr_va) != 0)
         return -1;
@@ -336,6 +344,7 @@ int elf_load_dynamic(const void *main_img, u64 main_size, struct elf_load_info *
     const struct elf64_ehdr *eh;
     if (parse_ehdr(main_img, main_size, &eh) != 0 || !out)
         return -1;
+    elf_load_bitmaps_reset(); /* fresh per-task address space: no dedup carry-over */
     const char *interp = find_interp(main_img, main_size, eh);
     if (!interp) {
         return elf_load_image(main_img, main_size, out);

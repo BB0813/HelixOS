@@ -490,19 +490,40 @@ CRITICAL #1/#2/#3：现在 `sys_munmap` / `sys_mprotect` / `vmm_unmap_user_range
 都是空 stub，用户 munmap 后页面仍占用 (leak + busybox mmap loop 失控),
 mprotect 返回成功但实际不变（破坏 W^X 语义 + 任何依赖 PROT_NONE 的应用 silent fail）。
 
-- [x] `kernel/mm/vmm.c` `vmm_unmap_user_range(virt, len)` — 暂为 no-op (D4 TODO: 需 per-task PML4)
-- [x] `kernel/mm/vmm.c` 新增 `vmm_set_prot(virt, len, prot)` — 暂为 no-op (D4 TODO)
-- [x] `kernel/proc/syscall.c` `sys_munmap` / `sys_mprotect` — 暂为 no-op (D4 TODO)
-- [x] `kernel/arch/x86_64/paging.c`：`paging_unmap_4k` + `paging_set_prot_range` + `table_count_present` 已实现 (no-op stubs 调用前可用)
+- [x] `kernel/mm/vmm.c` `vmm_unmap_user_range(virt, len)` — 真实：逐页 `paging_unmap_4k`（D4.2 落地 per-task PML4 后启用）
+- [x] `kernel/mm/vmm.c` 新增 `vmm_set_prot(virt, len, prot)` — 真实：`paging_set_prot_range` toggle PTE_W
+- [x] `kernel/proc/syscall.c` `sys_munmap` / `sys_mprotect` — 真实：校验对齐 + 范围窗口后调用 vmm 实现
+- [x] `kernel/arch/x86_64/paging.c`：`paging_unmap_4k` + `paging_set_prot_range` + `table_count_present` 已实现
 - [x] `kernel/proc/task.c` task_exit 注释文档化共享 PML4 限制；user_pages[] 清理
 - [x] helixbox smoke：HelixMunmapOK + HelixMprotectOK markers 验证 mmap 路径
-- [ ] **D4.2 (M25+)**：实现真实 unmap/prot — 需 per-task PML4 + COW; 当前 sys_munmap 返回 0 不释放 pages (D4.1 infra 已就绪)
+- [x] **D4.2 (M25)**：per-task PML4 激活 + 真实 unmap/prot — 见 D4.2 节
 
-**验收**：`make smoke-linux` 全 marker pass; `make smoke-fs` EXIT=0.
+**验收**：`make smoke-linux` 全 marker pass（含真实 HelixMunmapOK + HelixMprotectOK，
+HelixPreemptOK 验证 CR3 切换）; `make smoke-fs` EXIT=0; `make smoke-net` EXIT=0。
 
-**已知限制**：HelixOS 共享单个 PML4 — 释放任何 phys page 会影响所有 peer task。
-paging_unmap_4k / paging_set_prot_range 已实现并经过编译验证，但不通过 sys_munmap/sys_mprotect 调用（暂为 no-op）。
-D4.2 (per-task PML4 + COW) 是 M25+ 级别重构，阻塞 issue #1 CRITICAL #1/#2/#3 真实修复。
+**已知限制**：COW 延后（fork 仍 eager-copy，refcount 已就绪）；PROT_NONE 保持
+present+readable（无 fault-recovery handler，避免 #PF panic）；`make smoke-shell`
+受 shell 仅在 idle loop 处理命令的时序限制（pre-existing，与 D4.2 无关）。
+
+### D4.2 — per-task PML4 激活 + 真实 unmap/mprotect (M25) `[x]`
+
+Goal：解除共享单 PML4 硬阻塞，落地真实 unmap/prot，修复 issue #1 CRITICAL
+#1/#2/#3（此前 sys_munmap/sys_mprotect/vmm_unmap_user_range 均为 no-op stub）。
+
+- [x] `kernel/mm/pmm.c` per-page refcount：`pmm_page_own/share/deref/refcount`，`paging_unmap_4k` 改 `pmm_page_deref`（共享页不被 peer 释放）
+- [x] `kernel/arch/x86_64/paging.c`：`g_kernel_pml4`（boot identity 模板，永不持有 user 页）+ `paging_set_pml4`（换 CR3 + TLB flush）
+- [x] `kernel/mm/vmm.c`：`vmm_clone_kernel_pml4`（克隆模板，kernel leaves 共享）+ `vmm_destroy_address_space`（递归释放 per-task tables + user phys）+ 真实 unmap/prot
+- [x] `kernel/proc/task.c`：`task_create` 分配 per-task pml4；`task_activate` 在每次 context switch 加载 CR3；fork 存储子进程 pml4 副本；exit 先切到安全 pml4 再 destroy 旧地址空间
+- [x] `kernel/proc/exec.c` + `kernel/proc/elf.c`：ELF + stack 直接加载进 task 自己的 pml4；`elf_load_bitmaps_reset` 防跨地址空间 dedup 污染
+- [x] `kernel/proc/syscall.c`：`sys_execve` 换新地址空间加载后 destroy 旧空间
+- [x] `user/helixbox.c`：HelixMunmapOK 增强 — munmap 后 MAP_FIXED 同址重 mmap，验证 PTE 真清 + pages 释放
+- [x] **fork U-bit bug 修复**：`vmm_copy_user_page_tables` 顶层 PML4 写丢失 PTE_U
+      （err=0x15 = P=1+U=1+IF=1 → 子进程首条指令取指 #PF）→ 继承 parent 的 W|U|PWT|PCD
+
+**验收**：`make` clean; `make smoke` / `smoke-linux` / `smoke-fs` / `smoke-net` 全 pass;
+`make smoke-shell` pre-existing 时序失败（shell 只在 idle loop 处理命令，userland 链跑完前不会响应）。
+
+**已知限制**：fork 仍 eager-copy（COW 延后 M26+）；PROT_NONE 不丢 P 位。
 
 ### D5 — getrandom 真熵 + heap full coalesce + execve argv 修复 `[x]`
 

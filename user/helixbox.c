@@ -56,6 +56,7 @@
 #define PROT_READ        1
 #define PROT_WRITE       2
 #define MAP_ANONYMOUS   32
+#define MAP_FIXED       16
 
 /* Linux open flags */
 #define O_RDONLY 0
@@ -898,21 +899,25 @@ static void cmd_smoke(void)
                 xwrite("HelixMunmapFAIL munmap r="); xwrite(r < 0 ? "NEG" : "POS"); xwrite("\n");
                 munmap_ok = 0;
             }
-            /* 3. re-mmap same 8 KiB — should succeed (pages were freed).
-             *    We can't safely read old VA now (unmapped → #PF in helixbox
-             *    would be caught as SIGSEGV which we don't handle). Skip read
-             *    of unmapped memory; just verify re-mmap works. */
-            long va2 = usys6(SYS_mmap, 0, 2 * page,
+            /* 3. re-mmap MAP_FIXED at the SAME va — the PTEs were truly cleared
+             *    (and empty tables freed), so the address is reusable.
+             *    The old anon bump allocator alone would mask a leak. */
+            long va2 = usys6(SYS_mmap, va, 2 * page,
                              (long)(PROT_READ | PROT_WRITE),
-                             (long)(MAP_ANONYMOUS), -1, 0);
-            if (va2 < 0) {
+                             (long)(MAP_ANONYMOUS | MAP_FIXED), -1, 0);
+            if (va2 != va) {
                 xwrite("HelixMunmapFAIL re-mmap\n");
                 munmap_ok = 0;
             } else {
-                /* New pages must be zero (PMM zeros on alloc). */
+                /* Fresh pages must be zero, then writable. */
                 volatile unsigned char *q = (volatile unsigned char *)va2;
                 if (q[0] != 0 || q[2 * page - 1] != 0) {
                     xwrite("HelixMunmapFAIL new page not zero\n");
+                    munmap_ok = 0;
+                }
+                for (int i = 0; i < (int)(2 * page); i++) q[i] = 0xEE;
+                if (q[0] != 0xEE || q[2 * page - 1] != 0xEE) {
+                    xwrite("HelixMunmapFAIL write after re-mmap\n");
                     munmap_ok = 0;
                 }
                 usys(SYS_munmap, va2, 2 * page, 0);

@@ -14,6 +14,7 @@ enum {
 };
 
 static u8  *g_bitmap;
+static u8  *g_refs;          /* per-page refcounts (1 byte/page); 0 = reserved/unowned */
 static u64  g_total_pages;   /* pages covered by bitmap (from 0..ceiling) */
 static u64  g_free_pages;
 static u64  g_ceiling;       /* exclusive phys end */
@@ -78,9 +79,12 @@ int pmm_init(struct helix_boot_info *info)
 
     g_total_pages = g_ceiling >> PAGE_SHIFT;
     u64 bitmap_bytes = (g_total_pages + 7) / 8;
-    u64 bitmap_pages = (bitmap_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+    /* D4.2: per-page refcounts (1 byte/page) placed after the bitmap. */
+    u64 refs_bytes = g_total_pages;
+    u64 bitmap_pages = (align_up_u64(bitmap_bytes, PAGE_SIZE) +
+                        align_up_u64(refs_bytes, PAGE_SIZE) + PAGE_SIZE - 1) / PAGE_SIZE;
 
-    /* Find a ConventionalMemory region large enough for the bitmap itself.
+    /* Find a ConventionalMemory region large enough for the bitmap + refs.
      * Prefer above 1MiB. We cannot yet allocate — place bitmap by scanning map. */
     u64 bitmap_phys = 0;
     for (u64 i = 0; i < info->mmap_count; i++) {
@@ -102,6 +106,8 @@ int pmm_init(struct helix_boot_info *info)
 
     g_bitmap = (u8 *)(uintptr_t)bitmap_phys;
     memset(g_bitmap, 0xFF, (size_t)bitmap_bytes); /* all used initially */
+    g_refs = (u8 *)(uintptr_t)(bitmap_phys + align_up_u64(bitmap_bytes, PAGE_SIZE));
+    memset(g_refs, 0, refs_bytes);                /* all unowned initially */
     g_free_pages = 0;
 
     /* Mark free types as free */
@@ -151,6 +157,7 @@ u64 pmm_alloc_page(void)
         if (!bm_test(p)) {
             bm_set(p);
             g_free_pages--;
+            g_refs[p] = 1;
             return p << PAGE_SHIFT;
         }
     }
@@ -188,6 +195,7 @@ u64 pmm_alloc_pages(u64 n)
         for (u64 i = 0; i < n; i++) {
             bm_set(p + i);
             g_free_pages--;
+            g_refs[p + i] = 1;
         }
         return p << PAGE_SHIFT;
     }
@@ -203,3 +211,36 @@ void pmm_free_pages(u64 phys, u64 n)
 u64 pmm_total_pages(void) { return g_total_pages; }
 u64 pmm_free_pages_count(void) { return g_free_pages; }
 u64 pmm_phys_ceiling(void) { return g_ceiling; }
+
+/* D4.2: per-page refcounts. A fresh allocation is owned (refs=1). refs==0 means the
+ * page is reserved / MMIO / a shared kernel leaf — deref never frees those. */
+void pmm_page_own(u64 phys)
+{
+    u64 p = phys >> PAGE_SHIFT;
+    if (p < g_total_pages)
+        g_refs[p] = 1;
+}
+
+void pmm_page_share(u64 phys)
+{
+    u64 p = phys >> PAGE_SHIFT;
+    if (p < g_total_pages && g_refs[p] < 0xFF)
+        g_refs[p]++;
+}
+
+void pmm_page_deref(u64 phys)
+{
+    u64 p = phys >> PAGE_SHIFT;
+    if (p >= g_total_pages)
+        return;
+    if (g_refs[p] == 0)
+        return; /* reserved / MMIO / kernel leaf — never free */
+    if (--g_refs[p] == 0)
+        pmm_free_page(phys);
+}
+
+u32 pmm_page_refcount(u64 phys)
+{
+    u64 p = phys >> PAGE_SHIFT;
+    return (p < g_total_pages) ? (u32)g_refs[p] : 0;
+}

@@ -37,6 +37,7 @@ struct task {
     u64              user_stack_top;
     u64              kernel_stack;
     u64              kernel_stack_top;
+    u64              pml4;        /* per-task PML4 (D4.2); loaded on context switch */
     struct vfs_file *fds[16];
     u64              brk_start;   /* end of data segment */
     u64              brk_curr;    /* current program break */

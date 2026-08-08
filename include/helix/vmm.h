@@ -15,3 +15,9 @@ void vmm_unmap_user_range(u64 virt, u64 len); /* D4: real impl; frees user phys 
 int  vmm_set_prot(u64 virt, u64 len, int prot);
 /* Copy parent's user page tables into a new PML4; child owns copies of user pages. */
 u64  vmm_copy_user_page_tables(u64 parent_pml4_phys, struct task *child);
+/* D4.2: fresh per-task PML4 cloned from the kernel identity template (kernel leaves
+ * shared, no user pages). Used by task_create/exec. Returns phys or 0. */
+u64  vmm_clone_kernel_pml4(void);
+/* D4.2: free a task's whole address space — deref user leaves, free all per-task
+ * tables. Never destroys the kernel template. */
+void vmm_destroy_address_space(u64 pml4_phys);

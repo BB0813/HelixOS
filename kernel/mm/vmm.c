@@ -45,31 +45,25 @@ u64 vmm_alloc_user_pages(u64 virt, u64 npages, int writable)
     return 1; /* non-zero success */
 }
 
-/* D4: unmap user pages in [virt, virt+len). Pages that aren't present (e.g.
- * already unmapped, kernel leaves) are skipped silently. Used by munmap(2)
- * and by task exit to free the entire user VA.
- *
- * NOTE: temporarily a no-op pending musl regression investigation.
- * paging_unmap_4k frees phys pages but HelixOS shares a single PML4
- * across tasks, so freeing a phys page in one task also removes it from
- * all peer tasks. Full fix requires per-task PML4 + COW (M25+). */
+/* D4.2: real unmap. Each task owns a per-task PML4, so clearing a user PTE and
+ * dereffing its phys page only affects this task. Pages that aren't present (or
+ * kernel leaves) are skipped silently by paging_unmap_4k (-1). Empty intermediate
+ * tables are freed as the range is walked. */
 void vmm_unmap_user_range(u64 virt, u64 len)
 {
-    (void)virt;
-    (void)len;
+    u64 start = virt & ~0xFFFull;
+    u64 end = align_up_u64(virt + len, PAGE_SIZE);
+    for (u64 va = start; va < end; va += PAGE_SIZE)
+        paging_unmap_4k(va);
 }
 
-/* D4: adjust PTE_W on user pages in [virt, virt+len). PROT_READ → writable=0,
- * PROT_WRITE → writable=1. PROT_NONE is handled as PROT_READ (we don't drop
- * P itself to avoid accidental #PF on first instruction after mprotect).
- *
- * NOTE: temporarily a no-op pending musl regression investigation. */
+/* D4.2: real prot change. PROT_WRITE toggles PTE_W on; anything else drops it.
+ * PROT_NONE keeps the page present+readable (deviation from Linux — avoids #PF
+ * panic since HelixOS has no fault-recovery handler yet). */
 int vmm_set_prot(u64 virt, u64 len, int prot)
 {
-    (void)virt;
-    (void)len;
-    (void)prot;
-    return 0;
+    int writable = (prot & 0x2) ? 1 : 0; /* PROT_WRITE */
+    return paging_set_prot_range(virt, len, writable);
 }
 
 /*
@@ -202,7 +196,96 @@ u64 vmm_copy_user_page_tables(u64 parent_pml4_phys, struct task *child)
         u64 vaddr_base = (u64)i << 39;
         u64 child_entry = copy_pt_level(parent_sub, 2 /* PDPT level */,
                                          vaddr_base, child);
-        child_pml4[i] = child_entry ? child_entry : pe; /* fall back to share */
+        if (child_entry)
+            /* Inherit W|U|PWT|PCD so user-mode access through the child's
+             * PML4 entry works (parent's entry carries U after paging_map_4k). */
+            child_pml4[i] = child_entry | (pe & (PTE_W | PTE_U | 0x18));
+        else
+            child_pml4[i] = pe; /* fall back to share */
     }
     return (u64)(uintptr_t)child_pml4;
+}
+
+/* D4.2: clone the kernel identity template into a fresh per-task PML4. The
+ * structure (PML4/PDPT/PD tables) is per-task; kernel leaves are shared by
+ * PTE-value copy. The template holds no user pages, so nothing is tracked. */
+static u64 clone_kernel_level(u64 *parent_tab, int level)
+{
+    u64 *tab = alloc_table();
+    if (!tab)
+        return 0;
+    u64 tab_phys = (u64)(uintptr_t)tab;
+
+    for (int idx = 0; idx < 512; idx++) {
+        u64 pe = parent_tab[idx];
+        if (!(pe & PTE_P)) {
+            tab[idx] = 0;
+            continue;
+        }
+        u64 entry_flags = pe & (PTE_W | PTE_U | 0x18); /* W|U|PWT|PCD */
+        if (level == 0) {
+            tab[idx] = pe; /* leaf — share (template has no user leaves) */
+            continue;
+        }
+        if ((level == 1 || level == 2) && (pe & PTE_PS)) {
+            tab[idx] = pe; /* 2MiB/1GiB kernel large page — share */
+            continue;
+        }
+        u64 child_val = clone_kernel_level((u64 *)(uintptr_t)(pe & PTE_ADDR),
+                                           level - 1);
+        if (!child_val) {
+            tab[idx] = 0;
+            continue;
+        }
+        tab[idx] = child_val | entry_flags | PTE_P;
+    }
+    return tab_phys | PTE_P | PTE_W;
+}
+
+u64 vmm_clone_kernel_pml4(void)
+{
+    u64 *kp = (u64 *)(uintptr_t)paging_kernel_pml4();
+    u64 *pml4 = alloc_table();
+    if (!pml4)
+        return 0;
+    for (int i = 0; i < 512; i++) {
+        u64 pe = kp[i];
+        if (!(pe & PTE_P)) {
+            pml4[i] = 0;
+            continue;
+        }
+        u64 child = clone_kernel_level((u64 *)(uintptr_t)(pe & PTE_ADDR), 2);
+        pml4[i] = child ? child : pe;
+    }
+    return (u64)(uintptr_t)pml4;
+}
+
+/* D4.2: free one level of a per-task address space. User 4K leaves are dereffed;
+ * kernel large-page leaves (shared phys) are cleared but not freed. Every table in
+ * a per-task PML4 is task-owned, so each is freed after its entries are processed. */
+static void destroy_level(u64 *tab, int level)
+{
+    for (int idx = 0; idx < 512; idx++) {
+        u64 pe = tab[idx];
+        if (!(pe & PTE_P))
+            continue;
+        if (level == 0) {
+            if (pe & PTE_U)
+                pmm_page_deref(pe & PTE_ADDR);
+            tab[idx] = 0;
+        } else if (pe & PTE_PS) {
+            tab[idx] = 0; /* kernel large page — shared phys, not owned */
+        } else {
+            destroy_level((u64 *)(uintptr_t)(pe & PTE_ADDR), level - 1);
+            tab[idx] = 0;
+        }
+    }
+    pmm_free_page((u64)(uintptr_t)tab);
+}
+
+void vmm_destroy_address_space(u64 pml4_phys)
+{
+    if (!pml4_phys || pml4_phys == paging_kernel_pml4())
+        return; /* never destroy the kernel template */
+    destroy_level((u64 *)(uintptr_t)pml4_phys, 3);
 }
