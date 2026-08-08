@@ -47,6 +47,7 @@
 #define SYS_mmap          9
 #define SYS_mprotect     10
 #define SYS_munmap       11
+#define SYS_fstat         5
 #define SYS_getrandom   318
 #define SYS_fb_info     546
 #define SYS_readkey     547
@@ -895,6 +896,68 @@ static void cmd_smoke(void)
             usys(SYS_close, (int)fd, 0, 0);
         }
         if (malloc_ok) xwrite("HelixMallocOK\n");
+    }
+
+    /* D7.2: fstat smoke — verify FAT dirent timestamps propagate to st_mtime.
+     * /HELIXW.TXT is created by the FAT selftest at boot with current RTC time.
+     * st_size should be 16 ("HelixFATWriteOK\n"); st_mtime should be non-zero
+     * (RTC reads real time in QEMU). st_ino should be non-zero (start cluster).
+     * helix_stat layout matches kernel struct helix_stat in fat.c. */
+    {
+        xwrite("[d7.2] start\n");
+        int stat_ok = 1;
+        long fd = usys(SYS_open, (long)"/HELIXW.TXT", 0, 0);
+        if (fd < 0) {
+            xwrite("HelixStatFAIL open\n");
+            stat_ok = 0;
+        } else {
+            /* struct helix_stat: 144 bytes — see kernel/fs/fat.c */
+            unsigned char stbuf[144];
+            for (int i = 0; i < 144; i++) stbuf[i] = 0;
+            long r = usys(SYS_fstat, (int)fd, (long)stbuf, 0);
+            if (r != 0) {
+                xwrite("HelixStatFAIL fstat\n");
+                stat_ok = 0;
+            } else {
+                /* struct helix_stat layout (kernel/fs/fat.c):
+                 *   0  st_dev   (u64)
+                 *   8  st_ino   (u64)
+                 *  16  st_nlink (u64)
+                 *  24  st_mode  (u32)
+                 *  28  st_uid   (u32)
+                 *  32  st_gid   (u32)
+                 *  36  __pad    (u32)
+                 *  40  st_rdev  (u64)
+                 *  48  st_size  (i64)
+                 *  56  st_blksize (i64)
+                 *  64  st_blocks (i64)
+                 *  72  st_atime (i64)
+                 *  80  st_atime_nsec
+                 *  88  st_mtime (i64) */
+                long long st_size = 0;
+                long long st_mtime = 0;
+                long long st_ino = 0;
+                for (int i = 0; i < 8; i++) {
+                    st_ino   |= (long long)stbuf[8 + i] << (i * 8);
+                    st_size  |= (long long)stbuf[48 + i] << (i * 8);
+                    st_mtime |= (long long)stbuf[88 + i] << (i * 8);
+                }
+                if (st_size != 16) {
+                    xwrite("HelixStatFAIL size\n");
+                    stat_ok = 0;
+                }
+                if (st_ino == 0) {
+                    xwrite("HelixStatFAIL ino\n");
+                    stat_ok = 0;
+                }
+                if (st_mtime == 0) {
+                    xwrite("HelixStatFAIL mtime\n");
+                    stat_ok = 0;
+                }
+            }
+            usys(SYS_close, (int)fd, 0, 0);
+        }
+        if (stat_ok) xwrite("HelixStatOK\n");
     }
 
     /* M20: FAT subdir iteration probe — /etc/passwd and /etc/welcome.txt

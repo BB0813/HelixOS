@@ -33,6 +33,13 @@ struct fat_file {
     u64 size;
     u64 pos;
     char name83[11]; /* for dirent updates after write */
+    /* D7.2: FAT dirent date/time (BCD-encoded FAT format, little-endian u16).
+     * 0 if dirent had no timestamp. Used by fat_fstat to fill st_mtime etc. */
+    u16 wrt_time;   /* dirent offset 22: hh:mm:ss (2sec units) */
+    u16 wrt_date;   /* dirent offset 24: YYYYYYY-MMMM-DDDDD */
+    u16 acc_date;   /* dirent offset 18: last access date */
+    u16 crt_time;   /* dirent offset 14: creation time */
+    u16 crt_date;   /* dirent offset 16: creation date */
 };
 
 /* M20: dir iterator stored in fs_priv for subdirs. Root / uses NULL. */
@@ -44,6 +51,11 @@ struct fat_dir_iter {
 };
 
 static struct fat_fs g_fat;
+
+/* D7.2: FAT date/time ↔ Unix conversions (forward decl — used by fill_83_dirent
+ * and fat_open before the static definitions later in the file). */
+static u64 fat_date_to_unix(u16 fat_date, u16 fat_time);
+static void fat_unix_to_date(u64 unix_sec, u16 *out_date, u16 *out_time);
 
 static int read_sector(u64 rel_lba, void *buf)
 {
@@ -144,8 +156,20 @@ static int dir_name_eq(const u8 *dirent, const char want[11])
 
 /* Find entry in a directory cluster chain (or FAT16 root region).
  * For FAT16 root: start_clus == 0 means use root_lba/root_sectors. */
-static int find_in_dir(u32 start_clus, const char want[11],
-                       u32 *out_clus, u32 *out_size, u8 *out_attr)
+/* D7.2: FAT dirent metadata captured during find_in_dir, propagated to fat_file
+ * for fstat. Fields are raw FAT u16 little-endian date/time formats. */
+struct fat_dirent_meta {
+    u32 clus;
+    u32 size;
+    u8  attr;
+    u16 wrt_time;  /* offset 22 */
+    u16 wrt_date;  /* offset 24 */
+    u16 acc_date;  /* offset 18 */
+    u16 crt_time;  /* offset 14 */
+    u16 crt_date;  /* offset 16 */
+};
+
+static int find_in_dir(u32 start_clus, const char want[11], struct fat_dirent_meta *m)
 {
     u8 sec[512];
     if (start_clus == 0 && g_fat.fat_type != 32) {
@@ -164,9 +188,14 @@ static int find_in_dir(u32 start_clus, const char want[11],
                     u32 cl = e[26] | (e[27] << 8);
                     if (g_fat.fat_type == 32)
                         cl |= (u32)(e[20] | (e[21] << 8)) << 16;
-                    *out_clus = cl;
-                    *out_size = e[28] | (e[29] << 8) | (e[30] << 16) | (e[31] << 24);
-                    *out_attr = e[11];
+                    m->clus = cl;
+                    m->size = e[28] | (e[29] << 8) | (e[30] << 16) | (e[31] << 24);
+                    m->attr = e[11];
+                    m->crt_time = e[14] | (e[15] << 8);
+                    m->crt_date = e[16] | (e[17] << 8);
+                    m->acc_date = e[18] | (e[19] << 8);
+                    m->wrt_time = e[22] | (e[23] << 8);
+                    m->wrt_date = e[24] | (e[25] << 8);
                     return 0;
                 }
             }
@@ -191,9 +220,14 @@ static int find_in_dir(u32 start_clus, const char want[11],
                     u32 c = e[26] | (e[27] << 8);
                     if (g_fat.fat_type == 32)
                         c |= (u32)(e[20] | (e[21] << 8)) << 16;
-                    *out_clus = c;
-                    *out_size = e[28] | (e[29] << 8) | (e[30] << 16) | (e[31] << 24);
-                    *out_attr = e[11];
+                    m->clus = c;
+                    m->size = e[28] | (e[29] << 8) | (e[30] << 16) | (e[31] << 24);
+                    m->attr = e[11];
+                    m->crt_time = e[14] | (e[15] << 8);
+                    m->crt_date = e[16] | (e[17] << 8);
+                    m->acc_date = e[18] | (e[19] << 8);
+                    m->wrt_time = e[22] | (e[23] << 8);
+                    m->wrt_date = e[24] | (e[25] << 8);
                     return 0;
                 }
             }
@@ -205,8 +239,10 @@ static int find_in_dir(u32 start_clus, const char want[11],
 
 /* Resolve absolute path like /hello.txt or /bin/init.elf (leading / optional).
  * If out_attr is non-NULL, fills dirent's attribute byte (bit 0x10 = dir).
- * Leaf dirs resolve successfully (caller may open them for getdents64). */
-static int fat_resolve(const char *path, u32 *out_clus, u32 *out_size, u8 *out_attr)
+ * Leaf dirs resolve successfully (caller may open them for getdents64).
+ * D7.2: if out_meta is non-NULL, fills full dirent metadata (date/time). */
+static int fat_resolve(const char *path, u32 *out_clus, u32 *out_size, u8 *out_attr,
+                       struct fat_dirent_meta *out_meta)
 {
     while (*path == '/')
         path++;
@@ -225,22 +261,23 @@ static int fat_resolve(const char *path, u32 *out_clus, u32 *out_size, u8 *out_a
 
         char w[11];
         encode_83_upper(comp, w);
-        u32 cl = 0, sz = 0;
-        u8 attr = 0;
-        if (find_in_dir(dir_clus, w, &cl, &sz, &attr) != 0)
+        struct fat_dirent_meta m;
+        if (find_in_dir(dir_clus, w, &m) != 0)
             return -1;
         if (*path) {
             /* must be directory */
-            if (!(attr & 0x10))
+            if (!(m.attr & 0x10))
                 return -1;
-            dir_clus = cl;
+            dir_clus = m.clus;
             continue;
         }
         /* leaf: report cluster + size + attr unconditionally */
-        *out_clus = cl;
-        *out_size = sz;
+        *out_clus = m.clus;
+        *out_size = m.size;
         if (out_attr)
-            *out_attr = attr;
+            *out_attr = m.attr;
+        if (out_meta)
+            *out_meta = m;
         return 0;
     }
 }
@@ -415,6 +452,67 @@ struct helix_stat {
 #define S_IFREG 0100000
 #define S_IFDIR 0040000
 
+/* D7.2: FAT date/time ↔ Unix epoch conversions.
+ * FAT date: bits 15..9 = year-1980, 8..5 = month (1..12), 4..0 = day (1..31)
+ * FAT time: bits 15..11 = hours (0..23), 10..5 = minutes (0..59), 4..0 = seconds/2 */
+static u64 fat_date_to_unix(u16 fat_date, u16 fat_time)
+{
+    if (!fat_date && !fat_time)
+        return 0;
+    u64 day = (fat_date & 0x1F);
+    u64 mon = (fat_date >> 5) & 0x0F;
+    u64 yr  = 1980 + ((fat_date >> 9) & 0x7F);
+    if (mon < 1 || mon > 12 || day < 1 || day > 31)
+        return 0;
+    /* Days from 1970-01-01 to yr-mon-01 (proleptic Gregorian, Howard Hinnant). */
+    u64 y = yr - (mon <= 2);
+    u64 era = (y >= 0 ? y : y - 399) / 400;
+    u64 yoe = y - era * 400;
+    u64 doy = (153 * (mon + (mon > 2 ? -3 : 9)) + 2) / 5;
+    u64 doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    u64 days = era * 146097 + doe - 719468 + (day - 1);
+    u64 hour = (fat_time >> 11) & 0x1F;
+    u64 min  = (fat_time >> 5) & 0x3F;
+    u64 sec  = (fat_time & 0x1F) * 2;
+    return days * 86400 + hour * 3600 + min * 60 + sec;
+}
+
+static void fat_unix_to_date(u64 unix_sec, u16 *out_date, u16 *out_time)
+{
+    if (unix_sec == 0) {
+        *out_date = 0;
+        *out_time = 0;
+        return;
+    }
+    /* Split unix seconds into days + h:m:s */
+    u64 days = unix_sec / 86400;
+    u64 rem  = unix_sec % 86400;
+    u64 hour = rem / 3600;
+    u64 min  = (rem % 3600) / 60;
+    u64 sec  = rem % 60;
+
+    /* Howard Hinnant civil_from_days inverse: days since 1970-01-01 → y/m/d */
+    days += 719468;
+    u64 era = days / 146097;
+    u64 doe = days - era * 146097;           /* [0, 146096] */
+    u64 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;  /* [0, 399] */
+    u64 y = yoe + era * 400;
+    u64 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);  /* [0, 365] */
+    u64 mp = (5 * doy + 2) / 153;            /* [0, 11] */
+    u64 d  = doy - (153 * mp + 2) / 5 + 1;   /* [1, 31] */
+    u64 m  = mp + (mp < 10 ? 3 : -9);        /* [1, 12] */
+    y += (m <= 2);
+    if (y < 1980) {
+        *out_date = 0;
+        *out_time = 0;
+        return;
+    }
+    u16 yr_off = (u16)(y - 1980);
+    if (yr_off > 127) yr_off = 127;  /* FAT year field is 7 bits */
+    *out_date = (u16)((yr_off << 9) | (m << 5) | d);
+    *out_time = (u16)((hour << 11) | (min << 5) | (sec / 2));
+}
+
 static long fat_fstat(struct vfs_file *f, void *statbuf)
 {
     struct helix_stat *st = statbuf;
@@ -428,6 +526,21 @@ static long fat_fstat(struct vfs_file *f, void *statbuf)
         st->st_mode = S_IFREG | 0444;
         st->st_size = (i64)f->size;
         st->st_blocks = (i64)((f->size + 511) / 512);
+    }
+    /* D7.2: pseudo-inode from fs_priv (fat_file.start_clus or dir_iter.clus).
+     * Unique per file/dir — two paths to the same file share cluster. */
+    if (f->fs_priv) {
+        struct fat_file *ff = f->fs_priv;
+        st->st_ino = ff->start_clus ? ff->start_clus : 1;
+    } else {
+        st->st_ino = 1;  /* root dir */
+    }
+    /* D7.2: real timestamps from FAT dirent (if present). */
+    if (f->fs_priv && !f->is_dir) {
+        struct fat_file *ff = f->fs_priv;
+        st->st_mtime = (i64)fat_date_to_unix(ff->wrt_date, ff->wrt_time);
+        st->st_atime = (i64)fat_date_to_unix(ff->acc_date, ff->wrt_time);
+        st->st_ctime = (i64)fat_date_to_unix(ff->crt_date, ff->crt_time);
     }
     return 0;
 }
@@ -692,6 +805,8 @@ static int dir_find_free_slot(u32 dir_clus, u64 *out_lba, u32 *out_off, u8 *sec_
     return 0;
 }
 
+/* D7.2: fill_83_dirent — also stamps current RTC time as crt/wrt/acc.
+ * date/time left 0 if RTC unavailable. */
 static void fill_83_dirent(u8 *e, const char name83[11], u8 attr, u32 clus, u32 size)
 {
     memset(e, 0, 32);
@@ -705,6 +820,15 @@ static void fill_83_dirent(u8 *e, const char name83[11], u8 attr, u32 clus, u32 
     e[29] = (u8)((size >> 8) & 0xFF);
     e[30] = (u8)((size >> 16) & 0xFF);
     e[31] = (u8)((size >> 24) & 0xFF);
+    extern u64 rtc_unix_seconds(void);
+    u64 now = rtc_unix_seconds();
+    u16 d = 0, t = 0;
+    fat_unix_to_date(now, &d, &t);
+    e[14] = (u8)(t & 0xFF);  e[15] = (u8)(t >> 8);   /* crt_time */
+    e[16] = (u8)(d & 0xFF);  e[17] = (u8)(d >> 8);   /* crt_date */
+    e[18] = (u8)(d & 0xFF);  e[19] = (u8)(d >> 8);   /* acc_date */
+    e[22] = (u8)(t & 0xFF);  e[23] = (u8)(t >> 8);   /* wrt_time */
+    e[24] = (u8)(d & 0xFF);  e[25] = (u8)(d >> 8);   /* wrt_date */
 }
 
 /* Update size/start of a root entry matching 8.3 name. */
@@ -868,13 +992,12 @@ static int fat_resolve_parent(const char *path, u32 *out_parent, char out_name83
             return 0;
         }
         /* mid-component — must be a directory */
-        u32 cl = 0, sz = 0;
-        u8 attr = 0;
-        if (find_in_dir(dir_clus, w, &cl, &sz, &attr) != 0)
+        struct fat_dirent_meta m;
+        if (find_in_dir(dir_clus, w, &m) != 0)
             return -1;
-        if (!(attr & 0x10))
+        if (!(m.attr & 0x10))
             return -1;
-        dir_clus = cl;
+        dir_clus = m.clus;
     }
 }
 
@@ -1048,7 +1171,7 @@ int fat_rmdir_path(const char *path)
     /* Check the leaf is a directory AND empty before unlinking. */
     u32 cl = 0, sz = 0;
     u8 attr = 0;
-    if (fat_resolve(path, &cl, &sz, &attr) != 0)
+    if (fat_resolve(path, &cl, &sz, &attr, 0) != 0)
         return -1;
     if (!(attr & 0x10))
         return -1; /* not a directory */
@@ -1089,10 +1212,9 @@ static int fat_create_root(const char *path, int is_dir, u32 *out_clus)
     }
     char w[11];
     encode_83_upper(path, w);
-    u32 cl0, sz0;
-    u8 attr0;
+    struct fat_dirent_meta m0;
     u32 root_key = (g_fat.fat_type == 32) ? g_fat.root_clus : 0;
-    if (find_in_dir(root_key, w, &cl0, &sz0, &attr0) == 0)
+    if (find_in_dir(root_key, w, &m0) == 0)
         return -1; /* EEXIST */
 
     u32 cl = fat_alloc_cluster();
@@ -1244,13 +1366,23 @@ static int fat_open(const char *path, int flags, struct vfs_file **out)
 
     u32 cl = 0, sz = 0;
     u8 attr = 0;
+    struct fat_dirent_meta meta;
     int need_create = (flags & VFS_O_CREAT) != 0;
-    if (fat_resolve(path, &cl, &sz, &attr) != 0) {
+    if (fat_resolve(path, &cl, &sz, &attr, &meta) != 0) {
         if (!need_create || !fat_writable_type())
             return -1;
         if (fat_create_root(path, 0, &cl) != 0)
             return -1;
         sz = 0;
+        memset(&meta, 0, sizeof(meta));
+        meta.clus = cl;
+        /* Stamp creation time on newly created file (D7.2). */
+        extern u64 rtc_unix_seconds(void);
+        u64 now = rtc_unix_seconds();
+        fat_unix_to_date(now, &meta.crt_date, &meta.crt_time);
+        meta.wrt_date = meta.crt_date;
+        meta.wrt_time = meta.crt_time;
+        meta.acc_date = meta.crt_date;
     } else if (attr & 0x10) {
         /* M20: leaf is a directory — open for getdents64 (no read/write). */
         struct fat_dir_iter *it = kmalloc(sizeof(*it));
@@ -1296,6 +1428,12 @@ static int fat_open(const char *path, int flags, struct vfs_file **out)
     ff->start_clus = cl;
     ff->size = sz;
     ff->pos = (flags & VFS_O_APPEND) ? sz : 0;
+    /* D7.2: capture dirent date/time for fstat */
+    ff->crt_time = meta.crt_time;
+    ff->crt_date = meta.crt_date;
+    ff->acc_date = meta.acc_date;
+    ff->wrt_time = meta.wrt_time;
+    ff->wrt_date = meta.wrt_date;
     struct vfs_file *vf = kmalloc(sizeof(*vf));
     if (!vf) {
         kfree(ff);
@@ -1426,7 +1564,7 @@ int fat_selftest_write(void)
 
     /* Resolve via path lookup (proves dirent visible) */
     u32 cl = 0, sz = 0;
-    if (fat_resolve(path, &cl, &sz, 0) != 0) {
+    if (fat_resolve(path, &cl, &sz, 0, 0) != 0) {
         kprintf("[fat] selftest resolve after write failed\n");
         return -1;
     }

@@ -15,3 +15,5 @@ int  timer_poll_heartbeat(void);
 int  timer_preempt_pending(void);
 /* M22: threshold in ticks for syscall-return preempt (~80ms @100Hz). */
 int  timer_preempt_threshold(void);
+/* D7.2: CMOS RTC — Unix epoch seconds (UTC). Falls back to 0 if RTC reads 0. */
+u64  rtc_unix_seconds(void);
