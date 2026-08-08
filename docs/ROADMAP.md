@@ -540,8 +540,9 @@ execve argv leak）。这一批不阻塞功能但影响可信度。
       大块应一次成功 (HelixMallocOK smoke)
 - [x] `kernel/proc/syscall.c` `sys_execve` argv：**验证无 leak** — argv 被 push 到
       user stack 而非 kernel heap，失败路径无 kernel 侧副本需 kfree（D4 审查确认）
-- [ ] （可选，延后） `kernel/net/tcp.c` `txq[4] → txq[16]`（MAJOR #2）；当前
-      helixbox 跑大文件 cat 够用，无 smoke 阻塞
+- [x] `kernel/net/tcp.c` `txq[4] → txq[16]`（MAJOR #2，commit 30ee495）；同时修
+      重传循环满环 bug：`for (idx=head; idx!=tail; idx=(idx+1)%16)` 在队列满
+      (head==tail) 时一次都不执行，改为按 `tx_count` 次数迭代（`idx=(head+k)%16`）
 
 **验收**：helixbox `HelixGetrandomOK` + `HelixMallocOK`；`make smoke-linux`
 EXIT=0；`make smoke-fs` EXIT=0。
@@ -595,6 +596,21 @@ Goal：`fstat` 不再返回假 0/1970-01-01 时间戳 — FAT 真实 mtime/atime
 
 **验收**：`make smoke-linux` 含 `HelixStatOK`，无 FAIL；`ls -l` 显示真实时间戳
 （非 1970-01-01）。
+
+### D8 — ioctl 收尾 + txq 重传满环修复 `[x]`
+
+Goal：修 Sakura MINOR #3（sys_ioctl 对非 console fd 一律 ENOSYS）— console 走
+真实 termios/winsize，非 tty 返回语义正确的 ENOTTY。顺带修 txq 满环重传遗漏。
+
+- [x] `include/helix/errno.h`：加 `ENOTTY 25`
+- [x] `kernel/proc/syscall.c` `sys_ioctl`：
+  - console fd 支持 `TCGETS`（写 60B termios，ICANON|ECHO）、`TCSETS/TCSETSW/TCSETSF`
+    （accept-and-ignore）、`TIOCGWINSZ`（80x24）、`TIOCGPGRP`（当前 pid）、
+    `FIONREAD`（0）；arg 均先 `user_ptr_ok` 校验
+  - 非 console fd（regular/pipe/socket）返回 `ENOTTY`（Linux 语义，替代 ENOSYS）
+- [x] `kernel/net/tcp.c` `tcp_retransmit` 满环重传修复（见 D5 txq[16] 条目）
+
+**验收**：`make smoke-linux` 全 marker pass；ioctl 不再对非 tty 返回 ENOSYS。
 
 ---
 

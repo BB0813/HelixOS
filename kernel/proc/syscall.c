@@ -331,18 +331,83 @@ static i64 sys_newfstatat(u64 dirfd, u64 path, u64 statbuf, u64 flags)
     return r;
 }
 
+/* Linux <asm-generic/ioctls.h> + <termios.h> subset (x86_64). */
+#define TCGETS      0x5401
+#define TCSETS      0x5402
+#define TCSETSW     0x5403
+#define TCSETSF     0x5404
+#define TIOCGPGRP   0x540F
+#define TIOCGWINSZ  0x5413
+#define FIONREAD    0x541B
+
+/* Layout matches glibc/musl <bits/termios-struct.h> (60 bytes, natural align). */
+struct helix_termios {
+    u32 c_iflag;
+    u32 c_oflag;
+    u32 c_cflag;
+    u32 c_lflag;
+    u8  c_line;
+    u8  c_cc[32];
+    u32 c_ispeed;
+    u32 c_ospeed;
+};
+
+struct helix_winsize {
+    u16 ws_row;
+    u16 ws_col;
+    u16 ws_xpixel;
+    u16 ws_ypixel;
+};
+
 static i64 sys_ioctl(u64 fd, u64 req, u64 arg)
 {
-    (void)arg;
-
     struct vfs_file *f = fd_get((int)fd);
     if (!f)
         return ERR(EBADF);
-    /* TCGETS etc. — stub success for tty probes on console */
-    if (f->is_console)
+
+    /* Terminal ioctls only apply to the console std fds (is_console: 1=out, 2=in). */
+    if (!f->is_console)
+        return ERR(ENOTTY);
+
+    switch (req) {
+    case TCGETS: {
+        if (!user_ptr_ok((void *)(uintptr_t)arg, sizeof(struct helix_termios)))
+            return ERR(EFAULT);
+        struct helix_termios *t = (struct helix_termios *)(uintptr_t)arg;
+        memset(t, 0, sizeof(*t));
+        t->c_lflag = 0xA;    /* ICANON|ECHO */
+        t->c_cc[6] = 1;      /* VMIN = 1 */
         return 0;
-    (void)req;
-    return ERR(ENOSYS);
+    }
+    case TCSETS:
+    case TCSETSW:
+    case TCSETSF:
+        return 0;            /* accept-and-ignore termios writes */
+    case TIOCGWINSZ: {
+        if (!user_ptr_ok((void *)(uintptr_t)arg, sizeof(struct helix_winsize)))
+            return ERR(EFAULT);
+        struct helix_winsize *w = (struct helix_winsize *)(uintptr_t)arg;
+        w->ws_row = 24;
+        w->ws_col = 80;
+        w->ws_xpixel = 0;
+        w->ws_ypixel = 0;
+        return 0;
+    }
+    case TIOCGPGRP: {
+        if (!user_ptr_ok((void *)(uintptr_t)arg, 4))
+            return ERR(EFAULT);
+        struct task *t = task_current();
+        *(i32 *)(uintptr_t)arg = (i32)(t ? t->pid : 0);
+        return 0;
+    }
+    case FIONREAD:
+        if (!user_ptr_ok((void *)(uintptr_t)arg, 4))
+            return ERR(EFAULT);
+        *(i32 *)(uintptr_t)arg = 0;
+        return 0;
+    default:
+        return ERR(ENOTTY);
+    }
 }
 
 static i64 sys_fcntl(u64 fd, u64 cmd, u64 arg)

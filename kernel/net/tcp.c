@@ -546,10 +546,12 @@ void tcp_retransmit(void) {
         if (ts->tx_count == 0) continue;
         if (now - ts->last_send_tick < TCP_RETRANS_TIMEOUT_TICKS) continue;
 
-        /* Resend all unacked segments */
+        /* Resend all unacked segments. Iterate by count (not head != tail) so a
+         * full ring (tx_count == 16, head == tail) still retransmits everything. */
         kprintf("[tcp] retransmit socket %d (tx_count=%u)\n", i, (unsigned)ts->tx_count);
         int dropped = 0;
-        for (u16 idx = ts->tx_head; idx != ts->tx_tail; idx = (idx + 1) % 16) {
+        for (u16 k = 0; k < ts->tx_count; k++) {
+            u16 idx = (u16)((ts->tx_head + k) % 16);
             struct tcp_tx_seg *tx = &ts->txq[idx];
             tx->retries++;
             if (tx->retries > TCP_RETRANS_MAX_RETRIES) {
