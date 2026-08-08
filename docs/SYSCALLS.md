@@ -23,10 +23,10 @@
 | 1 | write | **done** | console 行缓冲；**FAT 与 ramfs 文件可写** |
 | 2 | open | **done** | O_CREAT/TRUNC/APPEND（FAT 根 + ramfs） |
 | 3 | close | **done** | |
-| 5 | fstat | **done** | 最小 `struct stat` |
+| 5 | fstat | **done** | **D7.2**：真实 `st_ino`（=start cluster 伪 inode）+ `st_mtime/atime/ctime`（FAT dirent 时间戳 + CMOS RTC） |
 | 9 | mmap | **partial** | **匿名**（`MAP_ANONYMOUS` 或 `fd==-1`）；支持 `addr=0` 与 FIXED/hint；**非** file-backed；M18：**`fd==-4`** → map GOP framebuffer 物理页 |
-| 10 | mprotect | **partial** | 成功 stub（不改页属性） |
-| 11 | munmap | **partial** | 成功 stub（暂泄漏页） |
+| 10 | mprotect | **partial** | D4：no-op stub（成功不改页属性）；真实 prot 需 per-task PML4（M25+） |
+| 11 | munmap | **partial** | D4：no-op stub（成功但暂泄漏页）；真实 unmap 需 per-task PML4（M25+） |
 | 12 | brk | **done** | 按页扩展 |
 | 13 | rt_sigaction | **done** | SIG_DFL/IGN/handler 存表；用户 handler 帧未做 |
 | 14 | rt_sigprocmask | **done** | block/unblock/set；不可 mask KILL/STOP |
@@ -68,7 +68,7 @@
 | 231 | exit_group | **done** | |
 | 257 | openat | **done** | 重定向至 open |
 | 262 | newfstatat | **done** | 重定向至 fstatat |
-| 318 | getrandom | **done** | 软实现（ticks） |
+| 318 | getrandom | **done** | **D5**：RDRAND（CPUID.1:ECX[30]）+ Galois LFSR fallback；headless TCG 无 RDRAND 仍 deterministic-ish |
 | 90 | chmod | **ENOSYS** | M20 显式 -ENOSYS（无 kprintf 刷屏） |
 | 91 | fchmod | **ENOSYS** | M20 |
 | 92 | chown | **ENOSYS** | M20 |
@@ -128,4 +128,9 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-05 | **路线 D 收尾**：D1 `Makefile` smoke-net 端口等待 + `HelixTcpUserOK`/`HelixTcpPassiveOK` 升 hard-fail + `kernel/net/tcp.c` max-retries log 节流 30s；D2 `scripts/mkdisk.py` FAT32 root 路径走 `materialize_dir` + `is_root` flag 修 nested dir bug（mtools mdir 验证 EFI/BOOT/BOOTX64.EFI 可达）；D3 `kernel/drv/ps2.c` 加 0xE0 prefix 翻译箭头键 ESC [ A/B/C/D + `user/msh.c` msh_readline 重写为 cursor + 16 history + Ctrl+A/E/W/U/C |
 | 2026-08-05 | M20 VFS ext：`fat_getdents64` 改用 `fs_priv` 存 `fat_dir_iter` 走 cluster chain（subdir open 完整）；`fat_resolve` 加 `out_attr` 报告 leaf 是 dir；`fat_open` 检测 `attr & 0x10` 时返回 `is_dir=1` + `fs_priv=fat_dir_iter`；`syscall.c` 加 `case 21/90/91/92/93/94/132/133/280` 显式 -ENOSYS（不刷屏）；`mkdisk.py` 加 `--add-tree` + `--raw-fat` 标志；`mkdisk_deep.sh` 4 级目录验证 + mtools mdir 验证；helixbox `cmd_smoke` 加 subdir 探针 (`ls /etc` / `cat /etc/passwd` / `cat /etc/welcome.txt` / `ls /lib`) |
 | 2026-08-05 | M20 userland：`kernel/proc/exec.c` `linux_compat_run_busybox_applets` 5-applet chain (`echo HelixBusyBoxOK` → `cat /etc/welcome.txt` → `echo BB2_OK` → `true` → `echo HELIX_BB_DONE`) + 模块级 `g_bb_idx` 状态 + 自递归 exit-all-hook；`kernel/mm/heap.c` HEAP_PAGES 1024→2048 (4→8 MiB) 容纳 3+ BusyBox ELF 重 load；`user/msh.c` 加 6 builtin (`alias`/`unalias`/`export`/`unset`/`test` 含 `[` 形式 /`type`) + 文件静态 `msh_aliases[16]` + `msh_envtab[32]` 表；`msh_exec_line` 拆为 line/pipeline/strtok_r 三层支持 `;` statement separator；alias expansion 在 `msh_exec_pipeline` 早段 (lookup → 拼 body+tail → 重 tokenize)；bi_test 修单参 `-f` 优先于二元 `=` 检查 |
+| 2026-08-07 | **D4 内存安全基础设施**：`kernel/arch/x86_64/paging.c` `paging_unmap_4k`（单页 unmap + `pmm_free_page` + `invlpg` + 空中间表回收）+ `paging_set_prot_range`（toggle PTE_W）+ `table_count_present`；`kernel/mm/vmm.c` `vmm_unmap_user_range` / `vmm_set_prot` 与 `sys_munmap` / `sys_mprotect` 暂为 no-op（共享单 PML4 限制，真实修复 M25+ per-task PML4 + COW）；helixbox 加 `HelixMunmapOK` + `HelixMprotectOK` |
+| 2026-08-07 | **D5 熵源 + heap coalesce**：`sys_getrandom` 检测 CPUID RDRAND（leaf 1 ECX bit 30）走硬件，fallback Galois LFSR over TSC；`kernel/mm/heap.c` `kfree` 双向 full coalesce（线性 scan 找 next_phys 吸收 + prev_phys 吸收 freed block）；execve argv 审查确认**无 leak**（push 到 user stack，非 kernel heap）；helixbox 加 `HelixGetrandomOK` + `HelixMallocOK` |
+| 2026-08-07 | **D6 UI/UX 清理**：集中地址常量到 `include/helix/mm_layout.h`（USER_BASE/USER_STACK_TOP/USER_LOW window/INTERP）；`fd_init_task_stdio()` 改为 `syscall_entry_c` 入口一次（各 handler 不再重复调） |
+| 2026-08-08 | **D7.1 mkesp.sh 硬失败**：init/task2/helixbox/msh/tui ELF 缺失时 `exit 1` + 明确报错（替代静默跳过，修调试陷阱） |
+| 2026-08-08 | **D7.2 FAT stat 真实化**：`kernel/arch/x86_64/timer.c` `rtc_unix_seconds()`（CMOS 0x70/0x71 + BCD→bin + Hinnant civil→unix）；`kernel/fs/fat.c` `fat_file` 加 5 date/time 字段 + `fat_dirent_meta` + `find_in_dir` 读 dirent offset 14/16/18/22/24 + `fat_resolve` `out_meta` + `fat_date_to_unix`/`fat_unix_to_date` + `fill_83_dirent` 用 RTC stamp + `fat_fstat` 填 `st_ino`/`st_mtime`/`st_atime`/`st_ctime`；helixbox 加 `HelixStatOK`（st_size==16 && st_ino!=0 && st_mtime!=0） |
 

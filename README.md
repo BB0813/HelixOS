@@ -23,7 +23,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M24 + 路线 A→B→C→D (D1–D3) 已完成**（2026-08-05）；路线 D 续 D4–D6 **计划中**（issue [#1](https://github.com/BB0813/HelixOS/issues/1) Sakura 扫描 CRITICAL 修复）
+**M0–M24 + 路线 A→B→C→D (D1–D7) 已完成**（2026-08-08）；剩余：D4.2 真实 munmap/mprotect（需 per-task PML4 + COW，M25+）+ cross-dir rename（issue [#1](https://github.com/BB0813/HelixOS/issues/1) Sakura 扫描 CRITICAL 修复）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -51,6 +51,11 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | **D1** | **smoke-net 闭环**（端口等待 + HelixTcpUserOK/PassiveOK hard-fail + max-retries 节流） | **`HelixTcpUserOK` + `HelixTcpPassiveOK`** |
 | **D2** | **FAT32 nested dir 修复**（`is_root` flag + root 走 `materialize_dir`） | EFI/BOOT/BOOTX64.EFI 可达（mtools mdir 验证） |
 | **D3** | **msh 行规程增强**（ps2 0xE0 + ESC 箭头键 + cursor/history/Ctrl+A-E-W-U） | `make` EXIT=0；`smoke-linux` EXIT=0 |
+| **D4** | **内存安全基础设施**（paging unmap/prot + no-op stubs + 共享 PML4 限制文档化） | **`HelixMunmapOK` / `HelixMprotectOK`** |
+| **D5** | **熵源 + heap coalesce**（RDRAND/LFSR getrandom + kfree 双向 full coalesce + execve argv 无 leak 审查） | **`HelixGetrandomOK` / `HelixMallocOK`** |
+| **D6** | **UI/UX 清理**（mm_layout.h 集中地址常量 + fd_init_task_stdio 入口集中） | `make` EXIT=0；smoke 全 pass |
+| **D7.1** | **mkesp.sh 硬失败**（缺失 user ELF → exit 1 + 明确报错，替代静默跳过） | `rm build/user/*.elf && mkesp.sh` 非零退出 |
+| **D7.2** | **FAT stat 真实化**（CMOS RTC + FAT dirent 时间戳 + st_ino/mtime/atime/ctime） | **`HelixStatOK`** |
 | **M20** | **VFS ext + 用户态补全**（FAT subdir 走 cluster chain + chmod/chown/utimes 显式 ENOSYS + 4 级 subdir 验证 + /etc 资产 + **BusyBox 5-applet 真实 chain** + **msh 6 builtin** `alias`/`unalias`/`export`/`unset`/`test`/`type` + `;` 分隔符 + alias expansion + heap 4→8MiB） | `BusyBox chain done (5 applets)` + `HELIX_MSH_ALIAS_OK` + `HELIX_MSH_EXPORT_OK` + `HELIX_MSH_TEST_OK` + `HELIX_MSH_DONE` |
 
 ## 快速开始
@@ -129,7 +134,7 @@ HelixOS/
 
 ## 里程碑
 
-见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M24** + **路线 D**（D1–D3 已完成；D4–D6 **计划中** — 修 issue [#1](https://github.com/BB0813/HelixOS/issues/1) Sakura 扫描的 4 个 CRITICAL）。
+见 [`docs/ROADMAP.md`](docs/ROADMAP.md)。顺序：M0 → … → **M24** + **路线 D**（D1–D7 已完成；剩余 D4.2 per-task PML4 — 修 issue [#1](https://github.com/BB0813/HelixOS/issues/1) Sakura 扫描的 4 个 CRITICAL）。
 
 ## 许可
 

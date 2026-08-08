@@ -234,6 +234,42 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **不引入新 syscall**：sys_read 路径不变（`g_cons_ops.read` 已 wired 到 `cons_read`）；
   PS/2 ring buffer 直接消费 ESC 序列
 
+#### D4 内存安全基础设施
+
+- **约束：共享单 PML4** — 所有 task 共用一个 PML4；释放任何 phys page 会同时从
+  peer task 移除 → #PF。真实 unmap/prot 需 per-task PML4 + COW（M25+）
+- **`paging_unmap_4k(virt)`**：4 级 walk 单页 user leaf → `pmm_free_page` +
+  `invlpg` + 空中间表级联 free
+- **`paging_set_prot_range(virt, len, writable)`**：walk 范围内每页 toggle PTE_W
+- **no-op stubs**：`vmm_unmap_user_range` / `vmm_set_prot` / `sys_munmap` /
+  `sys_mprotect` 返回 0 不释放（D4 TODO 注释；paging 函数已实现但不由 syscall 调用）
+
+#### D5 熵源 + heap coalesce
+
+- **`sys_getrandom`**：CPUID.1:ECX[30] 检测 RDRAND → 硬件 10 次重试；fallback
+  Galois LFSR (`lfsr_next_byte`) over TSC
+- **`kfree` full coalesce**：线性 scan free list 找 next_phys 吸收 + prev_phys
+  （end == freed start）吸收 freed block，写回结果 size，不再入 free list
+- **execve argv 审查**：argv push 到 user stack，非 kernel heap → 无 leak，未改代码
+
+#### D6 UI/UX 清理
+
+- **`include/helix/mm_layout.h`** 集中 USER_BASE / USER_STACK_TOP / USER_LOW
+  window / INTERP 常量（单一来源，删 syscall.h inline 定义）
+- **`fd_init_task_stdio()` 集中**：`syscall_entry_c` 入口一次，各 handler 依赖已
+  初始化状态（此前每个 handler 重复调）
+- **延后**：kprintf ANSI color prefix（headless `isatty` 永远 false，低价值）
+
+#### D7 DX + FAT stat
+
+- **D7.1 `mkesp.sh` 硬失败**：user ELF 缺失时 `exit 1` + `"run 'make user' first"`
+  （替代静默跳过 — 假 "musl hang" 调试陷阱根因）
+- **D7.2 RTC**：`rtc_unix_seconds()` 读 CMOS（0x70/0x71，status A bit 7 防
+  update-in-progress，BCD→bin，Hinnant civil→unix，year=2000+）
+- **D7.2 FAT 时间戳**：`fat_file` 加 5 date/time 字段；`find_in_dir` 读 dirent
+  offset 14/16/18/22/24；`fill_83_dirent` 用 RTC stamp；`fat_fstat` 填
+  `st_ino=start_clus` + 真实 `st_mtime/atime/ctime`（`HelixStatOK`）
+
 ### M21 FAT32 完善
 
 - **`fat_free_chain(c)`**：从 cluster `c` 沿 FAT chain 释放（entries → 0），EOF 停止

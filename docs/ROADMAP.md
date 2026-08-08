@@ -481,7 +481,7 @@ Goal：msh 跟 Linux bash 一样有 cursor 行编辑 + history + Ctrl+A/E/W/U，
 HelixPreemptOK + cwd + sig 不回归）；`make smoke-fs` EXIT=0（FAT 不回归）。
 手工验证：msh 输入 `echo hello<Up>` 自动补全；Ctrl+A 跳行首；Ctrl+W 删 word。
 
-### D4 — 内存安全 trio (munmap / mprotect / vmm_unmap) `[~]`
+### D4 — 内存安全 trio (munmap / mprotect / vmm_unmap) `[x]`
 
 Goal：实修 Sakura AI 扫描 ([issue #1](https://github.com/BB0813/HelixOS/issues/1))
 CRITICAL #1/#2/#3：现在 `sys_munmap` / `sys_mprotect` / `vmm_unmap_user_range`
@@ -494,7 +494,7 @@ mprotect 返回成功但实际不变（破坏 W^X 语义 + 任何依赖 PROT_NON
 - [x] `kernel/arch/x86_64/paging.c`：`paging_unmap_4k` + `paging_set_prot_range` + `table_count_present` 已实现 (no-op stubs 调用前可用)
 - [x] `kernel/proc/task.c` task_exit 注释文档化共享 PML4 限制；user_pages[] 清理
 - [x] helixbox smoke：HelixMunmapOK + HelixMprotectOK markers 验证 mmap 路径
-- [ ] **D4.2 (M25+)**：实现真实 unmap/prot — 需 per-task PML4 + COW; 当前 sys_munmap 返回 0 不释放 pages
+- [ ] **D4.2 (M25+)**：实现真实 unmap/prot — 需 per-task PML4 + COW; 当前 sys_munmap 返回 0 不释放 pages (D4.1 infra 已就绪)
 
 **验收**：`make smoke-linux` 全 marker pass; `make smoke-fs` EXIT=0.
 
@@ -502,43 +502,76 @@ mprotect 返回成功但实际不变（破坏 W^X 语义 + 任何依赖 PROT_NON
 paging_unmap_4k / paging_set_prot_range 已实现并经过编译验证，但不通过 sys_munmap/sys_mprotect 调用（暂为 no-op）。
 D4.2 (per-task PML4 + COW) 是 M25+ 级别重构，阻塞 issue #1 CRITICAL #1/#2/#3 真实修复。
 
-### D5 — getrandom 真熵 + heap full coalesce + execve argv 修复 `[ ]`
+### D5 — getrandom 真熵 + heap full coalesce + execve argv 修复 `[x]`
 
 Goal：剩余 CRITICAL #4 (getrandom deterministic) + 部分 MAJOR（heap 外碎片 /
 execve argv leak）。这一批不阻塞功能但影响可信度。
 
-- [ ] `kernel/proc/syscall.c` `sys_getrandom`：检测 CPUID `RDRAND` (leaf 1 ECX bit 30)
-      走硬件 RDRAND；若不可用 fallback 到 LFSR mixer over TSC + 堆地址 + stack 字节
-      (收集 64 字节后 fold + siphash-style mix)。明确注释：headless QEMU 无
-      RDRAND 仍 deterministic-ish；helixbox 加 `HelixGetrandomOK` (verify buffer
-      非全 0 + non-pattern)
-- [ ] `kernel/mm/heap.c` `kfree` full coalesce：双向 — 当前块 + 上一块 (通过
-      `(hdr-1)->size` 后退) + 下一块 (通过 `(hdr + sz/sizeof(u64))->size` 前进)；
-      合并后写新 size 到结果块头。验证：连续 kfree 三个相邻块 → 再 kmalloc
+- [x] `kernel/proc/syscall.c` `sys_getrandom`：检测 CPUID `RDRAND` (leaf 1 ECX bit 30)
+      走硬件 RDRAND（10 次重试）；不可用时 fallback 到 Galois LFSR (`lfsr_next_byte`)
+      over TSC + 堆地址。明确注释：headless QEMU 无 RDRAND 仍 deterministic-ish；
+      helixbox 加 `HelixGetrandomOK` (verify buffer 非全 0 + non-pattern)
+- [x] `kernel/mm/heap.c` `kfree` full coalesce：双向 — 线性 free-list scan 找到
+      next_phys 并吸收，再找 prev_phys (其 end == freed block start) 吸收 freed
+      block，合并后写新 size 到结果块头。验证：连续 kfree 三个相邻块 → 再 kmalloc
       大块应一次成功 (HelixMallocOK smoke)
-- [ ] `kernel/proc/syscall.c` `sys_execve` argv leak：失败路径 kfree 所有
-      argv 副本 (含 argv[0])；成功路径由新 exec'd task 自管，旧 task user VA
-      销毁时统一释放（与 D4 vmm_unmap_user_range 联动）
-- [ ] （可选） `kernel/net/tcp.h` `txq[4] → txq[16]`（MAJOR #2）；HelixOS 当前
-      smoke 不阻塞但 helixbox 跑大文件 cat 应该够用
+- [x] `kernel/proc/syscall.c` `sys_execve` argv：**验证无 leak** — argv 被 push 到
+      user stack 而非 kernel heap，失败路径无 kernel 侧副本需 kfree（D4 审查确认）
+- [ ] （可选，延后） `kernel/net/tcp.c` `txq[4] → txq[16]`（MAJOR #2）；当前
+      helixbox 跑大文件 cat 够用，无 smoke 阻塞
 
-**验收**：helixbox 加 `HelixGetrandomOK` + `HelixMallocOK`；`make smoke-linux`
-EXIT=0；`make smoke-fs` EXIT=0；grep `\[malloc\]` log 应能看到合并后大块申请一次成功。
+**验收**：helixbox `HelixGetrandomOK` + `HelixMallocOK`；`make smoke-linux`
+EXIT=0；`make smoke-fs` EXIT=0。
 
-**已知边界**：RDRAND 在老 QEMU (<6.x) + TCG 可能 disabled；fallback mixer 在
+**已知边界**：RDRAND 在老 QEMU (<6.x) + TCG 可能 disabled；fallback LFSR 在
 单任务 boot 早期仍欠熵，但比纯 `timer_ticks + i*37` 强。
 
-### D6 — UI/UX 清理 + 文档 `[ ]`
+### D6 — UI/UX 清理 + 文档 `[x]`
 
-- [ ] （MINOR） `[fat]` / `[net]` / `[tcp]` kprintf 加 ANSI color prefix，headless
-      下用 `isatty(serial)` 判断（永远 false → 不变色不破坏 log）
-- [ ] （MINOR） 集中地址窗口常量到 `include/helix/mm_layout.h`（USER_BASE、
+- [ ] （MINOR，延后） `[fat]` / `[net]` / `[tcp]` kprintf 加 ANSI color prefix，
+      headless 下用 `isatty(serial)` 判断（永远 false → 不变色不破坏 log）
+- [x] （MINOR） 集中地址窗口常量到 `include/helix/mm_layout.h`（USER_BASE、
       USER_STACK_TOP、USER_LOW window、ld-helix 0x50000000 等），删 syscall.h
       内的 inline 定义
-- [ ] （MINOR） syscall.c 每个入口一次性 `fd_init_task_stdio()`；当前每个
+- [x] （MINOR） syscall.c 每个入口一次性 `fd_init_task_stdio()`；当前每个
       handler 重复调，改为 `syscall_entry_c` 入口处一次
-- [ ] GOAL_D4.md / GOAL_D5.md / GOAL_D6.md 创建
-- [ ] ROADMAP / ARCHITECTURE / SYSCALLS / README 加 D4–D6 节
+- [x] GOAL_D4.md / GOAL_D5.md / GOAL_D6.md 创建
+- [x] ROADMAP / ARCHITECTURE / SYSCALLS / README 加 D4–D6 节
+
+### D7 — DX 痛点 + FAT stat 真实化 `[x]`
+
+### D7.1 — mkesp.sh 对必需 user 二进制硬失败 `[x]`
+
+Goal：修调试陷阱 — `git clean -fd build/` 删掉 helixbox.elf 后 `make -j2` 不重建
+user binaries，直接 `bash scripts/run-qemu.sh` 绕过 `make esp` 的 user 依赖 →
+ESP 缺 helixbox → busybox chain 正常跑但 helixbox exec 静默失败 → 假 "musl hang"
+（D4 调试浪费 30 分钟根因）。
+
+- [x] `scripts/mkesp.sh`：init.elf/task2.elf/helixbox.elf/msh.elf/tui.elf 缺失时
+      `exit 1` + 明确错误 `"run 'make user' first"`（替代之前的静默跳过）
+
+**验收**：`rm build/user/*.elf && bash scripts/mkesp.sh` → 非零退出 + 明确报错。
+
+### D7.2 — FAT stat 真实字段 + CMOS RTC `[x]`
+
+Goal：`fstat` 不再返回假 0/1970-01-01 时间戳 — FAT 真实 mtime/atime/ctime + st_ino。
+
+- [x] `kernel/arch/x86_64/timer.c`：`rtc_unix_seconds()` — CMOS 0x70/0x71 读
+      sec/min/hour/day/mon/year，status A bit 7 等 update-in-progress，BCD→bin，
+      Hinnant civil→unix 换算（year=2000+）
+- [x] `kernel/fs/fat.c`：
+  - `struct fat_file` 加 wrt/acc/crt time/date 5 字段
+  - `struct fat_dirent_meta`（clus/size/attr + 4 组 date/time）
+  - `find_in_dir()` 读 dirent offset 14/16/18/22/24（FAT u16 date/time 布局）
+  - `fat_resolve()` 加 `out_meta`；3 个 caller 更新
+  - `fat_date_to_unix()` / `fat_unix_to_date()`（Hinnant inverse）
+  - `fill_83_dirent()` 用 RTC 真实时间 stamp 新建文件
+  - `fat_fstat()` 填 `st_ino=start_clus` + `st_mtime/atime/ctime`
+- [x] `user/helixbox.c`：`HelixStatOK` smoke — open `/HELIXW.TXT`，fstat，
+      验证 `st_size==16 && st_ino!=0 && st_mtime!=0`
+
+**验收**：`make smoke-linux` 含 `HelixStatOK`，无 FAIL；`ls -l` 显示真实时间戳
+（非 1970-01-01）。
 
 ---
 
