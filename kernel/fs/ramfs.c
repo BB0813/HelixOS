@@ -432,7 +432,8 @@ static int ramfs_rmdir_op(const char *path)
     return 0;
 }
 
-/* M24: same-directory rename — old/new must share parent. */
+/* M24: rename — same-dir renames the node; cross-dir also reparents it.
+ * M24.1: removed the same-parent restriction. */
 static int ramfs_rename_op(const char *oldpath, const char *newpath)
 {
     const char *old_rel = 0, *new_rel = 0;
@@ -450,8 +451,6 @@ static int ramfs_rename_op(const char *oldpath, const char *newpath)
         return -1;
     if (!old_leaf[0] || !new_leaf[0])
         return -1;
-    if (old_parent != new_parent)
-        return -1; /* same-dir only */
     int idx = find_child(old_parent, old_leaf);
     if (idx < 0)
         return -1;
@@ -459,6 +458,16 @@ static int ramfs_rename_op(const char *oldpath, const char *newpath)
      * (or fail). We keep it minimal — refuse if target exists. */
     if (find_child(new_parent, new_leaf) >= 0)
         return -1;
+    /* refuse moving a directory into itself or one of its descendants */
+    if (g_nodes[idx].is_dir) {
+        for (int p = new_parent; p >= 0; p = g_nodes[p].parent) {
+            if (p == idx)
+                return -1;
+            if (p == g_tmp_root)
+                break;
+        }
+    }
+    g_nodes[idx].parent = new_parent;
     memcpy(g_nodes[idx].name, new_leaf, RAMFS_MAX_NAME);
     return 0;
 }

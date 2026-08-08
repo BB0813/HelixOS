@@ -128,6 +128,22 @@ static void xwrite(const char *s)
     usys(SYS_write, 1, (long)s, (long)(p - s));
 }
 
+static void xwrite_dec(long v)
+{
+    char buf[24];
+    char *p = buf + sizeof(buf);
+    *--p = 0;
+    if (v < 0) {
+        xwrite("-");
+        v = -v;
+    }
+    do {
+        *--p = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    xwrite(p);
+}
+
 static int streq(const char *a, const char *b)
 {
     while (*a && *a == *b) {
@@ -688,6 +704,104 @@ static void cmd_smoke(void)
             usys(SYS_unlink, (long)"/tmp/b.txt", 0, 0);
         }
         if (unlink_ok) xwrite("HelixUnlinkOK\n");
+    }
+
+    /* M24.1: cross-directory rename smoke.
+     * ramfs: mkdir /tmp/rd → create /tmp/rd/f.txt → rename to /tmp/rf.txt
+     *   (different parents) → verify old gone, new readable, then cleanup.
+     * FAT:  move /etc/welcome.txt to root → verify read + old open fails →
+     *   move back (restore for the BusyBox chain's cat /etc/welcome.txt). */
+    {
+        xwrite("[rename] start\n");
+        int ren_ok = 1;
+
+        /* --- ramfs cross-dir --- */
+        long r = usys(SYS_mkdir, (long)"/tmp/rd", 0755, 0);
+        if (r != 0) {
+            xwrite("HelixRenameFAIL mkdir rd\n");
+            ren_ok = 0;
+        }
+        long fd = usys(SYS_open, (long)"/tmp/rd/f.txt", 65, 0644);
+        if (fd < 0) {
+            xwrite("HelixRenameFAIL create rd/f\n");
+            ren_ok = 0;
+        } else {
+            char msg[] = "RENAMED_1";
+            usys(SYS_write, (int)fd, (long)msg, (long)(sizeof(msg) - 1));
+            usys(SYS_close, (int)fd, 0, 0);
+        }
+        r = usys(SYS_rename, (long)"/tmp/rd/f.txt", (long)"/tmp/rf.txt", 0);
+        if (r != 0) {
+            xwrite("HelixRenameFAIL ramfs cross-dir\n");
+            ren_ok = 0;
+        }
+        {
+            long fdo = usys(SYS_open, (long)"/tmp/rd/f.txt", 0, 0);
+            long fdn = usys(SYS_open, (long)"/tmp/rf.txt", 0, 0);
+            if (fdo >= 0 || fdn < 0) {
+                xwrite("HelixRenameFAIL ramfs verify\n");
+                ren_ok = 0;
+            }
+            if (fdo >= 0) usys(SYS_close, (int)fdo, 0, 0);
+            if (fdn >= 0) {
+                char rb[16];
+                long nr = usys(SYS_read, (int)fdn, (long)rb, sizeof(rb));
+                /* "RENAMED_1" = 9 bytes */
+                if (nr < 0 || nr != 9 || rb[0] != 'R') {
+                    xwrite("HelixRenameFAIL ramfs read nr=");
+                    xwrite_dec(nr);
+                    xwrite("\n");
+                    ren_ok = 0;
+                }
+                usys(SYS_close, (int)fdn, 0, 0);
+            }
+        }
+        /* cleanup */
+        usys(SYS_unlink, (long)"/tmp/rf.txt", 0, 0);
+        usys(SYS_rmdir, (long)"/tmp/rd", 0, 0);
+
+        /* --- FAT cross-dir (etc → root → back) --- */
+        r = usys(SYS_rename, (long)"/etc/welcome.txt", (long)"/WELCOME_MOVED.TXT", 0);
+        if (r != 0) {
+            xwrite("HelixRenameFAIL FAT cross-dir\n");
+            ren_ok = 0;
+        } else {
+            long fd_old = usys(SYS_open, (long)"/etc/welcome.txt", 0, 0);
+            long fd_new = usys(SYS_open, (long)"/WELCOME_MOVED.TXT", 0, 0);
+            if (fd_old >= 0 || fd_new < 0) {
+                xwrite("HelixRenameFAIL FAT verify\n");
+                ren_ok = 0;
+            }
+            if (fd_old >= 0) usys(SYS_close, (int)fd_old, 0, 0);
+            if (fd_new >= 0) {
+                char rb[32];
+                long nr = usys(SYS_read, (int)fd_new, (long)rb, sizeof(rb));
+                /* "HELIX_WELCOME_OK\n" = 17 bytes */
+                if (nr < 0 || nr != 17 || rb[0] != 'H') {
+                    xwrite("HelixRenameFAIL FAT read nr=");
+                    xwrite_dec(nr);
+                    xwrite("\n");
+                    ren_ok = 0;
+                }
+                usys(SYS_close, (int)fd_new, 0, 0);
+            }
+            /* restore so the BusyBox chain's `cat /etc/welcome.txt` still works */
+            r = usys(SYS_rename, (long)"/WELCOME_MOVED.TXT", (long)"/etc/welcome.txt", 0);
+            if (r != 0) {
+                xwrite("HelixRenameFAIL FAT move-back\n");
+                ren_ok = 0;
+            } else {
+                long fd_restore = usys(SYS_open, (long)"/etc/welcome.txt", 0, 0);
+                if (fd_restore < 0) {
+                    xwrite("HelixRenameFAIL restore open\n");
+                    ren_ok = 0;
+                } else {
+                    usys(SYS_close, (int)fd_restore, 0, 0);
+                }
+            }
+        }
+
+        if (ren_ok) xwrite("HelixRenameOK\n");
     }
 
     /* M24: fsync + fdatasync + O_TRUNC smoke. */

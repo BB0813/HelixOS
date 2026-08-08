@@ -62,7 +62,7 @@
 | 271 | ppoll | **done** | M24：忽略 timespec/sigmask；委托 sys_poll |
 | 74 | fsync | **done** | M24：验证 fd；当前 FAT/ramfs 同步 write，no-op |
 | 75 | fdatasync | **done** | M24：同 fsync（无独立 metadata flush 路径） |
-| 82 | rename | **done** | M24：同目录 only (cross-dir 留 M25+)，FAT + ramfs |
+| 82 | rename | **done** | M24.1：同目录 + **cross-dir**（FAT 写新 dirent 复用 cluster + 更新 `..` + 不 free 链；ramfs reparent）；拒绝移目录入自身子树 |
 | 84 | rmdir | **done** | M24：目录必须空；FAT + ramfs |
 | 87 | unlink | **done** | M24：FAT mark 0xE5 + fat_free_chain；ramfs node_release |
 | 231 | exit_group | **done** | |
@@ -133,4 +133,5 @@ Entry：`syscall`/`sysretq`。Args：`rax` + `rdi,rsi,rdx,r10,r8,r9`。
 | 2026-08-07 | **D6 UI/UX 清理**：集中地址常量到 `include/helix/mm_layout.h`（USER_BASE/USER_STACK_TOP/USER_LOW window/INTERP）；`fd_init_task_stdio()` 改为 `syscall_entry_c` 入口一次（各 handler 不再重复调） |
 | 2026-08-08 | **D7.1 mkesp.sh 硬失败**：init/task2/helixbox/msh/tui ELF 缺失时 `exit 1` + 明确报错（替代静默跳过，修调试陷阱） |
 | 2026-08-08 | **D7.2 FAT stat 真实化**：`kernel/arch/x86_64/timer.c` `rtc_unix_seconds()`（CMOS 0x70/0x71 + BCD→bin + Hinnant civil→unix）；`kernel/fs/fat.c` `fat_file` 加 5 date/time 字段 + `fat_dirent_meta` + `find_in_dir` 读 dirent offset 14/16/18/22/24 + `fat_resolve` `out_meta` + `fat_date_to_unix`/`fat_unix_to_date` + `fill_83_dirent` 用 RTC stamp + `fat_fstat` 填 `st_ino`/`st_mtime`/`st_atime`/`st_ctime`；helixbox 加 `HelixStatOK`（st_size==16 && st_ino!=0 && st_mtime!=0） |
+| 2026-08-08 | **M24.1 cross-dir rename**：`kernel/fs/fat.c` `dir_rename_cross`（新父目录写新 dirent 复用同一 cluster + 保留时间戳 + `fat_update_dotdot` 更新目录 `..` + `dir_unlink_at(old,0)` 不 free 链）+ `fat_dir_has_ancestor`（`..` 链祖先环检测）+ `fat_rename_path` cross-dir 分发 + `dir_unlink_at` 加 `free_chain` 参数；`kernel/fs/ramfs.c` `ramfs_rename_op` 去同目录限制改 reparent + 祖先环检测；helixbox 加 `HelixRenameOK`（ramfs /tmp/rd→/tmp/rf.txt + FAT /etc/welcome.txt→root→move-back 全链路，0 FAIL） |
 

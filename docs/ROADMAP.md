@@ -416,13 +416,15 @@ Goal：补全 Linux ABI 差距（poll / fsync / unlink / rmdir / rename）+ sile
 - [x] `kernel/fs/fat.c`：`fat_resolve_parent` + `dir_unlink_at`（mark 0xE5 + `fat_free_chain`）+ `dir_rename_at` + `dir_is_empty` + `fat_unlink_path/rmdir_path/rename_path`
 - [x] `kernel/fs/ramfs.c`：`node_release` + `node_child_count` + `ramfs_unlink_op/rmdir_op/rename_op`，wire 到 `g_ramfs_ops`
 - [x] `user/helixbox.c`：`HelixPollOK`（poll fd=0） + `HelixUnlinkOK`（create + unlink + rmdir + rename） + `HelixFsyncOK`（fsync + fdatasync + bad-fd EBADF + O_TRUNC 重置 size 0）
+- [x] **M24.1 cross-dir rename**：`kernel/fs/fat.c` `dir_rename_cross`（新父目录写新 dirent 复用同一 cluster + 保留时间戳 + `fat_update_dotdot` 更新 `..` + `dir_unlink_at(old, 0)` 不 free chain）+ `fat_dir_has_ancestor`（走 `..` 链拒绝移入自身子树）+ `fat_rename_path` cross-dir 分发；`kernel/fs/ramfs.c` `ramfs_rename_op` 去掉同目录限制改 reparent + 祖先环检测；`dir_unlink_at` 加 `free_chain` 参数（rename 复用时不释放）
 - [x] init message: `"init syscall dispatch (M24 poll/ppoll + silent ENOSYS)"`
 
 **验收**：`make smoke-linux` 串口含 `HelixPollOK` + `HelixUnlinkOK` + `HelixFsyncOK`，无 FAIL；
 `grep -E "\[syscall\] ENOSYS" serial.log` 应为空（silent）；smoke-fs EXIT=0 不回归。
+`HelixRenameOK`（ramfs /tmp/rd→/tmp/rf.txt + FAT /etc→root→move-back 全链路）。
 
-**已知边界**: rename 同目录 only (cross-dir 需 cluster chain copy)；fsync 是 no-op (FAT+ramfs
-synchronous write 保留 op 字段为未来 buffered fs 留口)。
+**已知边界**: rename 同目录 + cross-dir 均支持（FAT 跨目录移动目录时 `..` 已更新；不 free
+cluster 链保证原内容完整）；fsync 是 no-op (FAT+ramfs synchronous write 保留 op 字段为未来 buffered fs 留口)。
 
 ---
 

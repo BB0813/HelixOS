@@ -190,12 +190,13 @@ QEMU user net hostfwd TCP：`hostfwd=tcp::8080-:8080`；host echo server 仅 smo
 - **`vfs_poll_one` default**：按 file 类型返回 mask (stdin → POLLIN, stdout → POLLOUT, dir → POLLIN, regular → POLLIN|POLLOUT，size=0 清 POLLIN)；`& events` 收窄
 - **`sys_unlink / sys_rmdir / sys_rename` (87/84/82)**：`resolve_user_path` (cwd-aware) → `vfs_*` → FAT / ramfs ops 分发
 - **FAT delete 实现**：`dir_unlink_at` mark `e[0]=0xE5` + `fat_free_chain(first_cluster)`；FAT16 root region 用 `g_fat.root_lba` + sec_i，FAT32 subdirs 走 cluster chain
-- **FAT rename same-dir only**：`fat_rename_path` 检查 `old_parent == new_parent` 后 `memcpy(e, new_name83, 11)`；cross-dir 留 M25+
-- **ramfs unlink/rmdir/rename**：`node_release(kfree data + memset slot)` + `node_child_count` (linear scan)；rename 同父 + 目标不存在约束
+- **FAT rename same-dir**：`fat_rename_path` 同父 → `memcpy(e, new_name83, 11)` in-place
+- **FAT rename cross-dir (M24.1)**：`dir_rename_cross` 在新父目录写新 dirent（`fill_83_dirent` 复用 source 的 cluster/size/attr + 保留 dirent offset 14..25 时间戳）→ `fat_update_dotdot`（目录移动时把首 cluster sec[32] 的 `..` 指向新父）+ `dir_unlink_at(old, free_chain=0)` 只 mark 0xE5 **不 free cluster 链**（内容随新 dirent 完整保留）。`fat_dir_has_ancestor` 走 `..` 链，拒绝把目录移入自身或后代（防环）。FAT16 root (`parent==0`) 与 FAT32 root cluster 的 `..` 表示分开处理
+- **ramfs unlink/rmdir/rename**：`node_release(kfree data + memset slot)` + `node_child_count` (linear scan)；rename (M24.1) 去同父限制 — 目标不存在 + 祖先环检测后 `parent = new_parent` + `memcpy(new_name)` reparent
 - **`sys_fsync / sys_fdatasync` (74/75)**：验证 fd；FAT `write_sector` 同步走 AHCI + ramfs in-memory → 实际 no-op；保留 op 字段为未来 buffered fs 留口
 - **`O_TRUNC` 在 `fat_open`/`ramfs_open`**：原 M20 已实现（`node->size = 0` / FAT 现有 truncate 路径）
 - **silent ENOSYS default**：dispatch default 分支去掉 `kprintf` 刷屏，统一返回 `ERR(ENOSYS)`；`grep "\[syscall\] ENOSYS" serial.log` 应为空
-- **验收**：helixbox `HelixPollOK` (poll fd=0) + `HelixUnlinkOK` (create + unlink + rmdir + rename) + `HelixFsyncOK` (fsync + fdatasync + bad-fd EBADF + O_TRUNC 重置 size 0)
+- **验收**：helixbox `HelixPollOK` (poll fd=0) + `HelixUnlinkOK` (create + unlink + rmdir + rename) + `HelixFsyncOK` (fsync + fdatasync + bad-fd EBADF + O_TRUNC 重置 size 0) + **`HelixRenameOK`**（ramfs cross-dir `/tmp/rd/f.txt`→`/tmp/rf.txt` + FAT `/etc/welcome.txt`→root→move-back，0 FAIL）
 
 ### M22 抢占式调度（preemptive）
 

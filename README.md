@@ -23,7 +23,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 
 ## 当前状态
 
-**M0–M24 + 路线 A→B→C→D (D1–D7) 已完成**（2026-08-08）；剩余：D4.2 真实 munmap/mprotect（需 per-task PML4 + COW，M25+）+ cross-dir rename（issue [#1](https://github.com/BB0813/HelixOS/issues/1) Sakura 扫描 CRITICAL 修复）
+**M0–M24 + 路线 A→B→C→D (D1–D7) 已完成**（2026-08-08）；剩余：D4.2 真实 munmap/mprotect（需 per-task PML4 + COW，M25+）
 
 | 阶段 | 内容 | 关键标记 |
 |------|------|----------|
@@ -47,7 +47,7 @@ HelixOS 不是 Linux 发行版，也不基于 Linux 内核源码。内核（Heli
 | M21 | **FAT32 完善**（stale-cleanup helper + 64MiB FAT32 大盘验证） | `selftest OK (FAT32): HelixFATWriteOK` |
 | M22 | **抢占式调度**（IRQ0 tick → syscall 返回路径 task_yield，阈值 8） | **`HelixPreemptOK`** |
 | M23 | **PS/2 鼠标**（aux port + IRQ12 + 3-byte packet → sys_mouse_read(548)） | **`HelixMouseOK`** |
-| M24 | **POSIX file ops 收尾**（poll/ppoll + unlink/rmdir/rename + fsync/fdatasync + silent ENOSYS） | **`HelixPollOK` / `HelixUnlinkOK` / `HelixFsyncOK`** |
+| M24 | **POSIX file ops 收尾**（poll/ppoll + unlink/rmdir/rename + fsync/fdatasync + silent ENOSYS；**M24.1 cross-dir rename**） | **`HelixPollOK` / `HelixUnlinkOK` / `HelixFsyncOK` / `HelixRenameOK`** |
 | **D1** | **smoke-net 闭环**（端口等待 + HelixTcpUserOK/PassiveOK hard-fail + max-retries 节流） | **`HelixTcpUserOK` + `HelixTcpPassiveOK`** |
 | **D2** | **FAT32 nested dir 修复**（`is_root` flag + root 走 `materialize_dir`） | EFI/BOOT/BOOTX64.EFI 可达（mtools mdir 验证） |
 | **D3** | **msh 行规程增强**（ps2 0xE0 + ESC 箭头键 + cursor/history/Ctrl+A-E-W-U） | `make` EXIT=0；`smoke-linux` EXIT=0 |
@@ -106,6 +106,7 @@ HelixTcpPassiveOK
 helixbox_smoke_done
 HelixFBInfoOK  HelixFBMmapOK  HelixKbOK
 HelixMouseOK
+HelixRenameOK
 ```
 
 详细步骤与排错见 [`docs/BUILD.md`](docs/BUILD.md)。

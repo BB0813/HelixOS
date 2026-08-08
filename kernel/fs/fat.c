@@ -1002,8 +1002,9 @@ static int fat_resolve_parent(const char *path, u32 *out_parent, char out_name83
 }
 
 /* M24: mark an entry deleted (0xE5) inside a given parent directory cluster chain.
- * Works for both FAT16 root region (parent==0) and FAT32 subdirs. */
-static int dir_unlink_at(u32 parent_clus, const char name83[11])
+ * Works for both FAT16 root region (parent==0) and FAT32 subdirs.
+ * M24.1: free_chain=0 for cross-dir rename (new dirent reuses the same cluster). */
+static int dir_unlink_at(u32 parent_clus, const char name83[11], int free_chain)
 {
     u8 sec[512];
     if (parent_clus == 0 && g_fat.fat_type != 32) {
@@ -1020,7 +1021,7 @@ static int dir_unlink_at(u32 parent_clus, const char name83[11])
                 e[0] = 0xE5;
                 if (write_sector(g_fat.root_lba + s, sec) != 0)
                     return -1;
-                if (c >= 2)
+                if (free_chain && c >= 2)
                     fat_free_chain(c);
                 return 0;
             }
@@ -1045,7 +1046,7 @@ static int dir_unlink_at(u32 parent_clus, const char name83[11])
                 e[0] = 0xE5;
                 if (write_sector(lba, sec) != 0)
                     return -1;
-                if (c >= 2)
+                if (free_chain && c >= 2)
                     fat_free_chain(c);
                 return 0;
             }
@@ -1161,7 +1162,7 @@ int fat_unlink_path(const char *path)
     char name83[11];
     if (fat_resolve_parent(path, &parent, name83) != 0)
         return -1;
-    return dir_unlink_at(parent, name83);
+    return dir_unlink_at(parent, name83, 1);
 }
 
 int fat_rmdir_path(const char *path)
@@ -1181,7 +1182,85 @@ int fat_rmdir_path(const char *path)
     char name83[11];
     if (fat_resolve_parent(path, &parent, name83) != 0)
         return -1;
-    return dir_unlink_at(parent, name83);
+    return dir_unlink_at(parent, name83, 1);
+}
+
+/* M24.1: update the `..` entry inside a moved directory to point at its new
+ * parent. dir_clus is the moved dir's first cluster; new_parent is the target
+ * parent cluster (0 = FAT16 root region). */
+static int fat_update_dotdot(u32 dir_clus, u32 new_parent)
+{
+    u8 sec[512];
+    if (read_sector(clus_to_lba(dir_clus), sec) != 0)
+        return -1;
+    u8 *e = &sec[32]; /* second dirent is `..` (first is `.`) */
+    if (!(e[0] == '.' && e[1] == '.'))
+        return -1; /* unexpected layout — refuse to corrupt */
+    u32 p = (new_parent == 0 && g_fat.fat_type != 32) ? 0 : new_parent;
+    e[20] = (u8)((p >> 16) & 0xFF);
+    e[21] = (u8)((p >> 24) & 0xFF);
+    e[26] = (u8)(p & 0xFF);
+    e[27] = (u8)((p >> 8) & 0xFF);
+    return write_sector(clus_to_lba(dir_clus), sec);
+}
+
+/* M24.1: cross-directory rename — write a new dirent in the target parent that
+ * reuses the source cluster chain, then delete the source dirent WITHOUT
+ * freeing the chain. Preserves the source timestamps. */
+static int dir_rename_cross(u32 old_parent, u32 new_parent,
+                            const char old_name83[11], const char new_name83[11])
+{
+    struct fat_dirent_meta m;
+    if (find_in_dir(old_parent, old_name83, &m) != 0)
+        return -1;
+    /* refuse overwrite of an existing target */
+    if (find_in_dir(new_parent, new_name83, 0) == 0)
+        return -1;
+
+    u8 sec[512];
+    u64 lba;
+    u32 off;
+    if (dir_find_free_slot(new_parent, &lba, &off, sec) != 0)
+        return -1;
+    u8 *e = &sec[off];
+    fill_83_dirent(e, new_name83, m.attr, m.clus, m.size);
+    /* fill_83_dirent stamps current RTC; preserve the source's timestamps */
+    e[14] = (u8)(m.crt_time & 0xFF);  e[15] = (u8)(m.crt_time >> 8);
+    e[16] = (u8)(m.crt_date & 0xFF);  e[17] = (u8)(m.crt_date >> 8);
+    e[18] = (u8)(m.acc_date & 0xFF);  e[19] = (u8)(m.acc_date >> 8);
+    e[22] = (u8)(m.wrt_time & 0xFF);  e[23] = (u8)(m.wrt_time >> 8);
+    e[24] = (u8)(m.wrt_date & 0xFF);  e[25] = (u8)(m.wrt_date >> 8);
+    if (write_sector(lba, sec) != 0)
+        return -1;
+
+    if ((m.attr & 0x10) && fat_update_dotdot(m.clus, new_parent) != 0)
+        return -1;
+    return dir_unlink_at(old_parent, old_name83, 0);
+}
+
+/* M24.1: walk a directory's parent chain via its `..` entry to see if
+ * target_clus is an ancestor. Used to refuse moving a directory into its own
+ * subtree (would create a cycle). Handles FAT32 root's self-referential `..`. */
+static int fat_dir_has_ancestor(u32 dir_clus, u32 target_clus)
+{
+    u8 sec[512];
+    u32 c = dir_clus;
+    while (c >= 2) {
+        if (read_sector(clus_to_lba(c), sec) != 0)
+            return 0;
+        u8 *e = &sec[32]; /* `..` */
+        if (!(e[0] == '.' && e[1] == '.'))
+            return 0;
+        u32 parent = e[26] | (e[27] << 8);
+        if (g_fat.fat_type == 32)
+            parent |= (u32)(e[20] | (e[21] << 8)) << 16;
+        if (parent == target_clus)
+            return 1;
+        if (parent == 0 || parent == c)
+            break; /* reached root (or root's self-loop) */
+        c = parent;
+    }
+    return 0;
 }
 
 int fat_rename_path(const char *oldp, const char *newp)
@@ -1194,10 +1273,17 @@ int fat_rename_path(const char *oldp, const char *newp)
         return -1;
     if (fat_resolve_parent(newp, &new_parent, new83) != 0)
         return -1;
-    /* Same-directory only — cross-dir move would need to copy chain + write dot-dot. */
-    if (old_parent != new_parent)
+    if (old_parent == new_parent)
+        return dir_rename_at(old_parent, old83, new83);
+
+    /* cross-directory: refuse moving a directory into itself or a descendant */
+    struct fat_dirent_meta m;
+    if (find_in_dir(old_parent, old83, &m) != 0)
         return -1;
-    return dir_rename_at(old_parent, old83, new83);
+    if ((m.attr & 0x10) && (new_parent == m.clus ||
+                            fat_dir_has_ancestor(new_parent, m.clus)))
+        return -1;
+    return dir_rename_cross(old_parent, new_parent, old83, new83);
 }
 
 static int fat_create_root(const char *path, int is_dir, u32 *out_clus)
