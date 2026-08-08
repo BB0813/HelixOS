@@ -20,6 +20,7 @@
 /qemu-*.log
 /qemu.err
 /serial.log
+/tcp_echo_server.log
 /ovmf_vars.fd
 /.tmp/
 *.qcow2
