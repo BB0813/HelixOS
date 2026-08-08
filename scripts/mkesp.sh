@@ -47,18 +47,33 @@ if [[ -f esp_assets/passwd ]]; then
 fi
 if [[ -f build/user/init.elf ]]; then
   ADD_ARGS+=(--add "build/user/init.elf:bin/init.elf")
+else
+  echo "error: build/user/init.elf missing — run 'make user' first" >&2
+  exit 1
 fi
 if [[ -f build/user/task2.elf ]]; then
   ADD_ARGS+=(--add "build/user/task2.elf:bin/task2.elf")
+else
+  echo "error: build/user/task2.elf missing — run 'make user' first" >&2
+  exit 1
 fi
 if [[ -f build/user/helixbox.elf ]]; then
   ADD_ARGS+=(--add "build/user/helixbox.elf:bin/helixbox")
+else
+  echo "error: build/user/helixbox.elf missing — run 'make user' first" >&2
+  exit 1
 fi
 if [[ -f build/user/msh.elf ]]; then
   ADD_ARGS+=(--add "build/user/msh.elf:bin/msh")
+else
+  echo "error: build/user/msh.elf missing — run 'make user' first" >&2
+  exit 1
 fi
 if [[ -f build/user/tui.elf ]]; then
   ADD_ARGS+=(--add "build/user/tui.elf:bin/tui")
+else
+  echo "error: build/user/tui.elf missing — run 'make user' first" >&2
+  exit 1
 fi
 if [[ -f build/user/ld-helix.so ]]; then
   ADD_ARGS+=(--add "build/user/ld-helix.so:lib/ld-helix.so")
